@@ -368,6 +368,14 @@ python -m seehydro.cli download sentinel2
 
 ### GEE 下载 Sentinel-2 的傻瓜式步骤
 
+下面这套步骤我直接按：
+
+- **南水北调中线京石段附近的一小段**
+
+来写。
+
+这样你可以直接复制用，不用先自己去想测试区域。
+
 #### 第 1 步：先准备 GEE 账号
 
 你至少要有：
@@ -389,10 +397,17 @@ export PYTHONPATH=/root/SeeHydro/src
 
 第一次不要下载太大范围。
 
-建议先拿一个很小的矩形范围测试，比如：
+这里直接给你一个京石段起步用的小范围：
 
-- 一个渠道附近的小区域
-- 一个你已经熟悉的测试区域
+- `bbox = [114.35, 38.20, 114.39, 38.23]`
+
+格式是：
+
+```python
+[min_lon, min_lat, max_lon, max_lat]
+```
+
+这一步你先不要改，先直接用这组范围跑第一次。
 
 #### 第 4 步：执行最小下载脚本
 
@@ -410,11 +425,11 @@ from pathlib import Path
 
 from seehydro.acquisition.gee import GEEDownloader
 
-output_path = Path("raw_geotiff/sentinel2_test_area.tif")
+output_path = Path("raw_geotiff/jingshi_sentinel2_small.tif")
 
-# 这里先用一个测试范围，后面你可以替换成自己的区域
+# 京石段附近的小范围测试区域
 # 格式: [min_lon, min_lat, max_lon, max_lat]
-bbox = [114.0, 35.0, 114.02, 35.02]
+bbox = [114.35, 38.20, 114.39, 38.23]
 
 downloader = GEEDownloader()
 geometry = ee.Geometry.Rectangle(bbox)
@@ -446,7 +461,7 @@ ls -lh raw_geotiff
 你应该至少能看到类似：
 
 ```text
-raw_geotiff/sentinel2_test_area.tif
+raw_geotiff/jingshi_sentinel2_small.tif
 ```
 
 #### 第 6 步：马上检查这张图有没有空间信息
@@ -455,7 +470,7 @@ raw_geotiff/sentinel2_test_area.tif
 python - <<'PY'
 import rasterio
 
-path = "raw_geotiff/sentinel2_test_area.tif"
+path = "raw_geotiff/jingshi_sentinel2_small.tif"
 
 with rasterio.open(path) as src:
     print("width =", src.width)
@@ -474,7 +489,7 @@ PY
 
 ```bash
 python -m seehydro.cli preprocess tile \
-  --input raw_geotiff/sentinel2_test_area.tif \
+  --input raw_geotiff/jingshi_sentinel2_small.tif \
   --size 512 \
   --overlap 0.25 \
   --output data/tiles
@@ -491,21 +506,159 @@ ls -lh data/tiles | head
 - 一批切片 `.tif`
 - 一个 `tile_index.csv`
 
-#### 第 9 步：从切片里挑少量样本到标注目录
-
-第一次只拿几张就够：
+#### 第 9 步：先看看切片都叫什么名字
 
 ```bash
-cp data/tiles/把这里改成某个切片文件名.tif labelme_work/
+find data/tiles -maxdepth 1 -type f -name "*.tif" | sort | head -n 10
 ```
 
-#### 第 10 步：再去做 Labelme 标注
+你会看到类似：
+
+```text
+data/tiles/jingshi_sentinel2_small_r0000_c0000.tif
+data/tiles/jingshi_sentinel2_small_r0000_c0001.tif
+data/tiles/jingshi_sentinel2_small_r0001_c0000.tif
+```
+
+#### 第 10 步：从切片里挑 3 到 10 张到标注目录
+
+第一次只拿几张就够，不要一次全搬过去。
+
+最简单的做法是直接复制前 3 张：
+
+```bash
+cp data/tiles/jingshi_sentinel2_small_r0000_c0000.tif labelme_work/
+cp data/tiles/jingshi_sentinel2_small_r0000_c0001.tif labelme_work/
+cp data/tiles/jingshi_sentinel2_small_r0001_c0000.tif labelme_work/
+```
+
+如果这几个文件名和你实际切出来的不一样，就按上一步 `find` 出来的名字替换。
+
+#### 第 11 步：确认标注目录里已经有图
+
+```bash
+ls -lh labelme_work
+```
+
+你应该能看到刚复制进去的 `.tif`。
+
+#### 第 12 步：再去做 Labelme 标注
 
 到这里你再打开 Labelme，开始标：
 
 - `water`
 
-#### 第 11 步：标完之后继续走训练流程
+#### 第 13 步：Labelme 里怎么做
+
+1. 打开 `Labelme`
+2. 点击 `Open Dir`
+3. 选择 `/root/SeeHydro/labelme_work`
+4. 打开第一张 `tif`
+5. 点击 `Create Polygons`
+6. 沿着水面边缘画多边形
+7. 标签统一输入 `water`
+8. 保存
+9. 每一张都保存出一个同名 `.json`
+
+标完后你的目录应该像这样：
+
+```text
+labelme_work/
+  jingshi_sentinel2_small_r0000_c0000.tif
+  jingshi_sentinel2_small_r0000_c0000.json
+  jingshi_sentinel2_small_r0000_c0001.tif
+  jingshi_sentinel2_small_r0000_c0001.json
+```
+
+#### 第 14 步：把标注转换成训练数据
+
+```bash
+python scripts/convert_labelme_to_masks.py \
+  --input-dir labelme_work \
+  --output-root data/seg_water
+```
+
+#### 第 15 步：确认训练数据已经生成
+
+```bash
+find data/seg_water -maxdepth 2 -type f | sort | head -n 20
+```
+
+你应该能看到：
+
+- `data/seg_water/images/*.tif`
+- `data/seg_water/masks/*.tif`
+
+#### 第 16 步：检查转换后的训练数据有没有保留空间信息
+
+```bash
+python - <<'PY'
+import rasterio
+
+for path in [
+    "data/seg_water/images/jingshi_sentinel2_small_r0000_c0000.tif",
+    "data/seg_water/masks/jingshi_sentinel2_small_r0000_c0000.tif",
+]:
+    with rasterio.open(path) as src:
+        print(path)
+        print("crs =", src.crs)
+        print("transform =", src.transform)
+        print("bounds =", src.bounds)
+        print("nodata =", src.nodata)
+        print()
+PY
+```
+
+#### 第 17 步：检查训练数据格式是否合格
+
+```bash
+python scripts/validate_seg_dataset.py \
+  --image-dir data/seg_water/images \
+  --mask-dir data/seg_water/masks \
+  --num-classes 2
+```
+
+#### 第 18 步：开始训练第一版模型
+
+```bash
+python -m seehydro.cli train segmentation \
+  --config configs/segmentation_binary_water.yaml
+```
+
+#### 第 19 步：确认模型文件已经生成
+
+```bash
+ls -lh models/seg_water
+```
+
+你应该重点看这个文件：
+
+```text
+models/seg_water/seg_best.pth
+```
+
+#### 第 20 步：如果第一版能跑通，再扩大样本
+
+第一次不要着急扩太大。
+
+最稳的路线是：
+
+1. 先用这 3 到 10 张跑通
+2. 再从 `data/tiles/` 里挑更多切片
+3. 再继续标注
+4. 再重新训练
+
+#### 第 21 步：如果你后面想换成别的渠段
+
+你只要改这几个地方：
+
+1. 下载脚本里的 `bbox`
+2. 输出文件名
+3. 后面复制切片时对应的文件名
+
+其他流程都不变。
+
+#### 第 22 步：这条京石段起步版流程的最短总结
 
 后面的顺序就是：
 
@@ -1543,6 +1696,99 @@ python -m seehydro.cli preprocess tile \
 
 ```bash
 cp data/tiles/把这里改成某个切片文件名.tif labelme_work/
+```
+
+### 京石段起步版一条龙命令
+
+如果你现在就想直接照着跑一次，先按这套执行：
+
+```bash
+cd /root/SeeHydro
+source .venv/bin/activate
+export PYTHONPATH=/root/SeeHydro/src
+mkdir -p raw_geotiff data/tiles data/seg_water/images data/seg_water/masks labelme_work models/seg_water logs/seg_water
+```
+
+```bash
+python - <<'PY'
+import ee
+from pathlib import Path
+from seehydro.acquisition.gee import GEEDownloader
+
+output_path = Path("raw_geotiff/jingshi_sentinel2_small.tif")
+bbox = [114.35, 38.20, 114.39, 38.23]
+
+downloader = GEEDownloader()
+geometry = ee.Geometry.Rectangle(bbox)
+image = downloader.get_sentinel2(
+    geometry=geometry,
+    date_range=("2024-01-01", "2024-12-31"),
+    cloud_pct_max=10,
+    bands=["B2", "B3", "B4"],
+)
+downloader.download_image(
+    image=image,
+    geometry=geometry,
+    output_path=output_path,
+    scale=10,
+)
+print("下载完成:", output_path)
+PY
+```
+
+```bash
+python - <<'PY'
+import rasterio
+path = "raw_geotiff/jingshi_sentinel2_small.tif"
+with rasterio.open(path) as src:
+    print("crs =", src.crs)
+    print("transform =", src.transform)
+    print("bounds =", src.bounds)
+PY
+```
+
+```bash
+python -m seehydro.cli preprocess tile \
+  --input raw_geotiff/jingshi_sentinel2_small.tif \
+  --size 512 \
+  --overlap 0.25 \
+  --output data/tiles
+```
+
+```bash
+find data/tiles -maxdepth 1 -type f -name "*.tif" | sort | head -n 10
+```
+
+```bash
+cp data/tiles/jingshi_sentinel2_small_r0000_c0000.tif labelme_work/
+cp data/tiles/jingshi_sentinel2_small_r0000_c0001.tif labelme_work/
+cp data/tiles/jingshi_sentinel2_small_r0001_c0000.tif labelme_work/
+```
+
+然后去 Labelme 标这 3 张，标签统一写：
+
+```text
+water
+```
+
+标完后继续：
+
+```bash
+python scripts/convert_labelme_to_masks.py \
+  --input-dir labelme_work \
+  --output-root data/seg_water
+```
+
+```bash
+python scripts/validate_seg_dataset.py \
+  --image-dir data/seg_water/images \
+  --mask-dir data/seg_water/masks \
+  --num-classes 2
+```
+
+```bash
+python -m seehydro.cli train segmentation \
+  --config configs/segmentation_binary_water.yaml
 ```
 
 ### 如果你是直接标注普通图片
