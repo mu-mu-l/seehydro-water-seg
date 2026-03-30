@@ -666,6 +666,191 @@ models/seg_water/seg_best.pth
 2. `validate_seg_dataset.py`
 3. `train segmentation`
 
+### 如果京石段这个 bbox 下载失败，按这个顺序排查
+
+第一次跑 GEE，失败并不稀奇。
+
+你不要一报错就全部推翻，按下面顺序一点点排。
+
+#### 情况 1：一运行就卡在认证或者提示 GEE 初始化失败
+
+这通常不是 bbox 的问题，而是：
+
+- GEE 账号还没认证好
+- 本机还没有有效凭据
+- 当前环境没法完成认证
+
+你先做这几件事：
+
+1. 确认你能正常使用自己的 Google Earth Engine 账号
+2. 重新进入项目虚拟环境
+3. 再重新执行一次最小下载脚本
+
+如果第一次运行弹出认证流程，就按提示完成认证。
+
+#### 情况 2：脚本能跑，但最后没有下载出 tif
+
+你先检查：
+
+```bash
+ls -lh raw_geotiff
+```
+
+如果目录里没有：
+
+- `jingshi_sentinel2_small.tif`
+
+那先不要继续切片，先回头查下载这一步。
+
+#### 情况 3：提示区域太大、请求失败、导出失败
+
+第一次最常见的处理办法不是乱改代码，而是：
+
+- **先缩小 bbox**
+
+你现在的起步 bbox 是：
+
+```python
+bbox = [114.35, 38.20, 114.39, 38.23]
+```
+
+如果它失败，你先改成更小的测试范围，例如：
+
+```python
+bbox = [114.35, 38.20, 114.37, 38.215]
+```
+
+也就是：
+
+- 经度范围缩小
+- 纬度范围缩小
+
+先让第一次下载成功，比一开始范围大更重要。
+
+#### 情况 4：提示影像为空、拿不到合适影像、结果不理想
+
+这通常优先改的是：
+
+- `date_range`
+- `cloud_pct_max`
+
+你现在的默认参数是：
+
+```python
+date_range=("2024-01-01", "2024-12-31")
+cloud_pct_max=10
+```
+
+如果这组条件太严，你可以先放宽云量限制，比如：
+
+```python
+cloud_pct_max=20
+```
+
+或者先换一个时间范围，例如：
+
+```python
+date_range=("2023-01-01", "2024-12-31")
+```
+
+最保守的调参顺序是：
+
+1. 先放宽 `cloud_pct_max`
+2. 再扩大 `date_range`
+3. 最后才考虑换区域
+
+#### 情况 5：下载出来了，但 tif 打不开或者空间信息不正常
+
+不要急着切片，先检查：
+
+```bash
+python - <<'PY'
+import rasterio
+
+path = "raw_geotiff/jingshi_sentinel2_small.tif"
+
+with rasterio.open(path) as src:
+    print("width =", src.width)
+    print("height =", src.height)
+    print("count =", src.count)
+    print("crs =", src.crs)
+    print("transform =", src.transform)
+    print("bounds =", src.bounds)
+    print("nodata =", src.nodata)
+PY
+```
+
+如果：
+
+- `crs` 是空的
+- `bounds` 明显异常
+- 图像尺寸特别离谱
+
+那说明这张结果图本身就不适合继续走后面的流程，先回到下载步骤重试。
+
+#### 情况 6：下载成功了，但切片后没有生成多少小图
+
+这时优先检查两件事：
+
+1. 原图本身是不是太小
+2. `--size 512` 对这张图是不是太大
+
+如果原图范围比较小，512 可能切不出很多块。
+
+你可以试试改成：
+
+```bash
+python -m seehydro.cli preprocess tile \
+  --input raw_geotiff/jingshi_sentinel2_small.tif \
+  --size 256 \
+  --overlap 0.25 \
+  --output data/tiles
+```
+
+也就是说：
+
+- 图太小，就把切片尺寸调小
+
+#### 情况 7：切片出来了，但你复制到 `labelme_work/` 的文件名对不上
+
+先不要手敲猜名字，直接先看：
+
+```bash
+find data/tiles -maxdepth 1 -type f -name "*.tif" | sort | head -n 20
+```
+
+然后按实际存在的文件名复制。
+
+#### 情况 8：标注后转换失败
+
+这时优先检查：
+
+1. `labelme_work/` 里有没有对应的 `.json`
+2. 标签是不是统一写成了 `water`
+3. `json` 里的 `imagePath` 还能不能找到原始标注图
+
+不要一上来就怀疑训练代码，先看标注文件本身。
+
+#### 情况 9：转换成功了，但空间信息没有保留下来
+
+优先检查这三个问题：
+
+1. 你给 Labelme 的是不是原始 tif 切片，而不是另存后的 png/jpg
+2. `json` 还能不能找到原始 tif
+3. 标注图尺寸和原始 tif 尺寸是否一致
+
+如果这三条有一条不满足，空间参考就可能继承失败。
+
+#### 最后给你一个最保守的排障原则
+
+如果第一次跑不通，调整顺序建议永远是：
+
+1. 先缩小 bbox
+2. 再放宽 `cloud_pct_max`
+3. 再扩大 `date_range`
+4. 再减小切片 `size`
+5. 最后才去改更复杂的代码逻辑
+
 ### 如果你想扩大到多个区域
 
 先不要一步就下很多大图。
