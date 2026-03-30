@@ -6,7 +6,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -18,21 +17,46 @@ from PIL import Image, ImageDraw
 app = typer.Typer(help="把 Labelme 标注批量转换成 SeeHydro 训练数据目录")
 
 
-def _load_labelme_image(json_path: Path, payload: dict) -> Image.Image:
-    """优先从 imageData 读取图像，否则从 imagePath 读取原图."""
-    image_data = payload.get("imageData")
-    if image_data:
-        raw = base64.b64decode(image_data)
-        return Image.open(io.BytesIO(raw)).convert("RGB")
-
+def _resolve_source_image(json_path: Path, payload: dict) -> Path | None:
+    """解析 Labelme 指向的原图路径."""
     image_path = payload.get("imagePath")
     if not image_path:
-        raise ValueError(f"{json_path} 缺少 imageData 和 imagePath，无法恢复原图")
+        return None
 
     source_image = (json_path.parent / image_path).resolve()
     if not source_image.exists():
         raise FileNotFoundError(f"{json_path} 指向的原图不存在: {source_image}")
-    return Image.open(source_image).convert("RGB")
+    return source_image
+
+
+def _read_geotiff_profile(source_image: Path | None) -> dict | None:
+    """尽量从原始 GeoTIFF 读取空间参考信息."""
+    if source_image is None or source_image.suffix.lower() not in {".tif", ".tiff"}:
+        return None
+
+    with rasterio.open(source_image) as src:
+        return {
+            "crs": src.crs,
+            "transform": src.transform,
+            "nodata": src.nodata,
+            "width": src.width,
+            "height": src.height,
+        }
+
+
+def _load_labelme_image(json_path: Path, payload: dict) -> tuple[Image.Image, dict | None]:
+    """优先从 imageData 读取图像，同时尽量恢复原始 GeoTIFF 空间参考."""
+    source_image = _resolve_source_image(json_path, payload)
+    geo_profile = _read_geotiff_profile(source_image)
+
+    image_data = payload.get("imageData")
+    if image_data:
+        raw = base64.b64decode(image_data)
+        return Image.open(io.BytesIO(raw)).convert("RGB"), geo_profile
+
+    if source_image is None:
+        raise ValueError(f"{json_path} 缺少 imageData 和 imagePath，无法恢复原图")
+    return Image.open(source_image).convert("RGB"), geo_profile
 
 
 def _draw_mask(payload: dict, size: tuple[int, int], label_map: dict[str, int]) -> np.ndarray:
@@ -62,31 +86,46 @@ def _draw_mask(payload: dict, size: tuple[int, int], label_map: dict[str, int]) 
     return np.array(mask, dtype=np.uint8)
 
 
-def _write_rgb_tif(image: Image.Image, output_path: Path) -> None:
-    arr = np.asarray(image, dtype=np.uint8)
-    if arr.ndim != 3 or arr.shape[2] != 3:
-        raise ValueError(f"原图必须是 RGB 三通道，得到 shape={arr.shape}")
-
+def _build_geo_profile(arr: np.ndarray, geo_profile: dict | None, count: int, nodata=None) -> dict:
+    """根据原始 GeoTIFF 信息构建输出 profile."""
     profile = {
         "driver": "GTiff",
         "height": arr.shape[0],
         "width": arr.shape[1],
-        "count": 3,
+        "count": count,
         "dtype": "uint8",
     }
+
+    if nodata is not None:
+        profile["nodata"] = nodata
+
+    if geo_profile is not None:
+        if geo_profile["width"] != arr.shape[1] or geo_profile["height"] != arr.shape[0]:
+            raise ValueError(
+                "原始 GeoTIFF 尺寸与 Labelme 图像尺寸不一致，无法安全继承空间参考: "
+                f"geo=({geo_profile['width']}, {geo_profile['height']}), "
+                f"image=({arr.shape[1]}, {arr.shape[0]})"
+            )
+        if geo_profile["crs"] is not None:
+            profile["crs"] = geo_profile["crs"]
+        if geo_profile["transform"] is not None:
+            profile["transform"] = geo_profile["transform"]
+
+    return profile
+
+
+def _write_rgb_tif(image: Image.Image, output_path: Path, geo_profile: dict | None = None) -> None:
+    arr = np.asarray(image, dtype=np.uint8)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        raise ValueError(f"原图必须是 RGB 三通道，得到 shape={arr.shape}")
+
+    profile = _build_geo_profile(arr, geo_profile, count=3)
     with rasterio.open(output_path, "w", **profile) as dst:
         dst.write(arr.transpose(2, 0, 1))
 
 
-def _write_mask_tif(mask: np.ndarray, output_path: Path) -> None:
-    profile = {
-        "driver": "GTiff",
-        "height": mask.shape[0],
-        "width": mask.shape[1],
-        "count": 1,
-        "dtype": "uint8",
-        "nodata": 255,
-    }
+def _write_mask_tif(mask: np.ndarray, output_path: Path, geo_profile: dict | None = None) -> None:
+    profile = _build_geo_profile(mask, geo_profile, count=1, nodata=255)
     with rasterio.open(output_path, "w", **profile) as dst:
         dst.write(mask, 1)
 
@@ -124,7 +163,7 @@ def main(
     converted = 0
     for json_path in json_files:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
-        image = _load_labelme_image(json_path, payload)
+        image, geo_profile = _load_labelme_image(json_path, payload)
         mask = _draw_mask(payload, image.size, label_map)
 
         stem = json_path.stem
@@ -132,8 +171,8 @@ def main(
         mask_out = mask_dir / f"{stem}.tif"
 
         if not dry_run:
-            _write_rgb_tif(image, image_out)
-            _write_mask_tif(mask, mask_out)
+            _write_rgb_tif(image, image_out, geo_profile=geo_profile)
+            _write_mask_tif(mask, mask_out, geo_profile=geo_profile)
 
         converted += 1
 
