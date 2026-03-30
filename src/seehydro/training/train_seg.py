@@ -70,6 +70,10 @@ def train_segmentation(
     lr = config.get("lr", 1e-4)
     weight_decay = config.get("weight_decay", 1e-4)
     patience = config.get("early_stopping_patience", 15)
+    val_split = config.get("val_split", 0.2)
+    random_seed = config.get("random_seed", 42)
+    num_workers = config.get("num_workers", 4)
+    encoder_weights = config.get("encoder_weights", "imagenet")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"设备: {device}")
@@ -79,23 +83,40 @@ def train_segmentation(
     val_transform = get_seg_val_transform(input_size)
 
     full_dataset = SegmentationDataset(image_dir, mask_dir, in_channels=in_channels)
-    val_size = max(1, int(len(full_dataset) * 0.2))
+    if len(full_dataset) < 2:
+        raise ValueError("分割训练至少需要 2 个样本，才能划分训练集和验证集。")
+
+    val_size = max(1, int(len(full_dataset) * val_split))
+    if val_size >= len(full_dataset):
+        val_size = 1
     train_size = len(full_dataset) - val_size
     train_dataset, val_dataset = random_split(
-        full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42)
+        full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(random_seed)
     )
 
     # 为不同split设置不同transform
     train_dataset.dataset.transform = train_transform
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
 
     val_dataset.dataset.transform = val_transform
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
 
     logger.info(f"训练集: {train_size}, 验证集: {val_size}")
 
     # 模型
-    model = SegmentationModel(model_name, encoder, "imagenet", in_channels, num_classes, device)
+    model = SegmentationModel(model_name, encoder, encoder_weights, in_channels, num_classes, device)
 
     # 损失和优化器
     criterion = DiceCELoss(num_classes).to(device)

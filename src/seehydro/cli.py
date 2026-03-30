@@ -8,6 +8,7 @@ import typer
 from loguru import logger
 
 from seehydro import __version__
+from seehydro.utils.config import load_config
 
 # ---------------------------------------------------------------------------
 # 应用与子命令组
@@ -163,6 +164,8 @@ def preprocess_tile(
     ] = Path("data/tiles"),
 ) -> None:
     """滑窗切片，将大幅影像拆分为固定尺寸的小块。"""
+    from seehydro.preprocessing.tiling import TileGenerator
+
     if not (0.0 <= overlap < 1.0):
         typer.echo(
             f"错误：--overlap 需在 [0, 1) 范围内，当前值为 {overlap}",
@@ -174,8 +177,28 @@ def preprocess_tile(
         "开始执行影像切片 ... input={}, size={}, overlap={}, output={}",
         input, size, overlap, output,
     )
-    typer.echo("TODO: 实现影像切片预处理")
-    # TODO: 调用 seehydro.preprocessing 模块实现具体逻辑
+    input_files = []
+    if input.is_dir():
+        input_files = sorted(p for p in input.iterdir() if p.is_file() and p.suffix.lower() in {".tif", ".tiff"})
+    elif input.is_file():
+        input_files = [input]
+    else:
+        typer.echo(f"错误：输入路径不存在 {input}", err=True)
+        raise typer.Exit(code=1)
+
+    if not input_files:
+        typer.echo(f"错误：未在 {input} 找到可切片的 tif/tiff 影像", err=True)
+        raise typer.Exit(code=1)
+
+    generator = TileGenerator(tile_size=size, overlap=overlap)
+    all_tile_infos = []
+    for image_path in input_files:
+        tile_infos = generator.generate_tiles(image_path=image_path, output_dir=output, prefix=image_path.stem)
+        all_tile_infos.extend(tile_infos)
+
+    index_path = output / "tile_index.csv"
+    generator.save_tile_index(all_tile_infos, index_path)
+    typer.echo(f"切片完成，共 {len(all_tile_infos)} 个切片，索引保存在 {index_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +214,34 @@ def train_segmentation(
     ] = Path("configs/default.yaml"),
 ) -> None:
     """训练语义分割模型（水面、边坡、马道等）。"""
+    from seehydro.training.train_seg import train_segmentation as run_segmentation_training
+
     logger.info("开始执行分割模型训练 ... config={}", config)
-    typer.echo("TODO: 实现分割模型训练")
-    # TODO: 调用 seehydro.training 模块实现具体逻辑
+    cfg = load_config(config)
+    data_cfg = cfg.get("data", {})
+    model_cfg = cfg.get("model", {})
+    train_cfg = cfg.get("train", {})
+    output_cfg = cfg.get("output", {})
+
+    image_dir = Path(data_cfg.get("image_dir", "data/tiles/highres/images"))
+    mask_dir = Path(data_cfg.get("mask_dir", "data/tiles/highres/masks"))
+    output_dir = Path(output_cfg.get("checkpoint_dir", "models/trained"))
+
+    if not image_dir.exists() or not mask_dir.exists():
+        typer.echo(f"错误：训练数据目录不存在 image_dir={image_dir}, mask_dir={mask_dir}", err=True)
+        raise typer.Exit(code=1)
+
+    merged_cfg = {
+        **model_cfg,
+        **train_cfg,
+    }
+    best_path = run_segmentation_training(
+        image_dir=image_dir,
+        mask_dir=mask_dir,
+        config=merged_cfg,
+        output_dir=output_dir,
+    )
+    typer.echo(f"分割训练完成，最佳模型保存在 {best_path}")
 
 
 @train_app.command("detection")
@@ -204,9 +252,36 @@ def train_detection(
     ] = Path("configs/default.yaml"),
 ) -> None:
     """训练目标检测模型（桥梁、倒虹吸、渡槽等建筑物）。"""
+    from seehydro.training.train_det import train_detection as run_detection_training
+
     logger.info("开始执行检测模型训练 ... config={}", config)
-    typer.echo("TODO: 实现检测模型训练")
-    # TODO: 调用 seehydro.training 模块实现具体逻辑
+    cfg = load_config(config)
+    data_cfg = cfg.get("data", {})
+    model_cfg = cfg.get("model", {})
+    train_cfg = cfg.get("train", {})
+    output_cfg = cfg.get("output", {})
+
+    data_yaml = Path(data_cfg.get("data_yaml", "datasets/detection/data.yaml"))
+    output_dir = Path(output_cfg.get("project_dir", "models/trained/detection"))
+
+    if not data_yaml.exists():
+        typer.echo(f"错误：检测数据配置不存在 {data_yaml}", err=True)
+        raise typer.Exit(code=1)
+
+    merged_cfg = {
+        "model_name": model_cfg.get("model_name", "yolov8m"),
+        "input_size": model_cfg.get("input_size", 1024),
+        "batch_size": train_cfg.get("batch_size", 4),
+        "epochs": train_cfg.get("epochs", 200),
+        "lr": train_cfg.get("lr", 1e-3),
+        "experiment_name": train_cfg.get("experiment_name", "snbd_det"),
+    }
+    best_path = run_detection_training(
+        data_yaml=data_yaml,
+        config=merged_cfg,
+        output_dir=output_dir,
+    )
+    typer.echo(f"检测训练完成，最佳模型保存在 {best_path}")
 
 
 # ---------------------------------------------------------------------------

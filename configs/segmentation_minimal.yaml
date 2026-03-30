@@ -1,0 +1,29 @@
+# 最小分割训练配置：用于本地快速验证训练链路
+
+data:
+  image_dir: "data/demo_seg/images"
+  mask_dir: "data/demo_seg/masks"
+  val_split: 0.25
+  random_seed: 42
+
+model:
+  model_name: "Unet"
+  encoder: "resnet18"
+  encoder_weights: null
+  in_channels: 3
+  num_classes: 2
+  input_size: 128
+
+train:
+  batch_size: 2
+  epochs: 2
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  early_stopping_patience: 2
+  loss: "dice_ce"
+  num_workers: 0
+
+output:
+  checkpoint_dir: "models/demo_seg"
+  best_model: "models/demo_seg/seg_best.pth"
+  log_dir: "logs/demo_seg"

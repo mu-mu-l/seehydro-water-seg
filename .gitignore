@@ -3,6 +3,7 @@ data/
 outputs/
 models/pretrained/
 models/trained/
+models/demo_seg/
 
 # Python
 __pycache__/
@@ -34,6 +35,7 @@ Thumbs.db
 
 # Logs
 *.log
+tmp_*/
 
 # GEE credentials
 .private-key.json

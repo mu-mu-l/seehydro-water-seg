@@ -1,0 +1,35 @@
+# 真实数据起步配置：二分类水面分割
+# 类别定义：
+#   0 = background
+#   1 = canal_water
+
+data:
+  image_dir: "data/seg_water/images"
+  mask_dir: "data/seg_water/masks"
+  val_split: 0.2
+  random_seed: 42
+
+model:
+  model_name: "Unet"
+  encoder: "resnet18"
+  encoder_weights: null
+  in_channels: 3
+  num_classes: 2
+  input_size: 256
+  class_names:
+    - "background"
+    - "canal_water"
+
+train:
+  batch_size: 4
+  epochs: 30
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  early_stopping_patience: 8
+  loss: "dice_ce"
+  num_workers: 0
+
+output:
+  checkpoint_dir: "models/seg_water"
+  best_model: "models/seg_water/seg_best.pth"
+  log_dir: "logs/seg_water"
