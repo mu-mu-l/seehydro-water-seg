@@ -237,7 +237,13 @@ class TileDownloader:
     }
     TILE_SIZE = 256
 
-    def __init__(self, provider: str = "tianditu", api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        provider: str = "tianditu",
+        api_key: str | None = None,
+        request_interval: float = 0.35,
+        max_backoff_seconds: float = 60.0,
+    ) -> None:
         """初始化瓦片下载器。
 
         Args:
@@ -247,6 +253,9 @@ class TileDownloader:
         self.provider = provider
         self.api_key = api_key
         self.url_template = self.PROVIDERS.get(provider, provider)
+        self.request_interval = max(0.0, request_interval)
+        self.max_backoff_seconds = max(1.0, max_backoff_seconds)
+        self._last_request_ts = 0.0
         self._session = requests.Session()
 
     def download_tiles(
@@ -359,20 +368,30 @@ class TileDownloader:
                 api_key=self.api_key or "",
             )
             try:
+                self._respect_request_interval()
                 response = self._session.get(url, timeout=10)
+                self._last_request_ts = time.monotonic()
+                if response.status_code == 429:
+                    sleep_seconds = self._compute_retry_delay(response, attempt)
+                    logger.warning(
+                        "瓦片下载触发限流: z={}, x={}, y={}, attempt={}, retry_in={:.2f}s",
+                        z, x, y, attempt, sleep_seconds,
+                    )
+                    time.sleep(sleep_seconds)
+                    continue
                 if response.status_code != 200:
                     logger.warning(
                         "瓦片下载失败(status={}): z={}, x={}, y={}, attempt={}",
                         response.status_code, z, x, y, attempt,
                     )
-                    time.sleep(1 * attempt)
+                    time.sleep(self._compute_backoff(attempt))
                     continue
 
                 buf = np.frombuffer(response.content, np.uint8)
                 img_bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
                 if img_bgr is None:
                     logger.warning("瓦片解码失败: z={}, x={}, y={}, attempt={}", z, x, y, attempt)
-                    time.sleep(1 * attempt)
+                    time.sleep(self._compute_backoff(attempt))
                     continue
 
                 img_rgb: np.ndarray = img_bgr[:, :, ::-1]
@@ -383,9 +402,36 @@ class TileDownloader:
                     "瓦片下载异常: z={}, x={}, y={}, attempt={}, error={}",
                     z, x, y, attempt, e,
                 )
-                time.sleep(1 * attempt)
+                time.sleep(self._compute_backoff(attempt))
 
         return None
+
+    def _respect_request_interval(self) -> None:
+        """在两次请求间增加最小间隔，降低瞬时请求密度。"""
+        if self.request_interval <= 0:
+            return
+
+        elapsed = time.monotonic() - self._last_request_ts
+        remaining = self.request_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _compute_backoff(self, attempt: int) -> float:
+        """指数退避并加入抖动，避免重复命中同一限流窗口。"""
+        base_seconds = min(self.max_backoff_seconds, float(2 ** (attempt - 1)))
+        return base_seconds + random.uniform(0.1, 0.5)
+
+    def _compute_retry_delay(self, response: requests.Response, attempt: int) -> float:
+        """优先读取 Retry-After，缺失时退化为指数退避。"""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                retry_after_seconds = float(retry_after)
+                return min(self.max_backoff_seconds, max(1.0, retry_after_seconds))
+            except ValueError:
+                logger.debug("忽略无法解析的 Retry-After: {}", retry_after)
+
+        return self._compute_backoff(attempt)
 
     def merge_tiles(
         self,
