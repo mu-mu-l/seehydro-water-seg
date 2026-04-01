@@ -27,15 +27,15 @@ def generate_summary_report(
             "类别": "渠道",
             "子类": "水面",
             "数量": 1,
-            "平均宽度(m)": canal_params.get("mean_width_m", "-"),
+            "平均估算水面宽度(m)": canal_params.get("mean_estimated_water_surface_width_m", "-"),
             "备注": f"采样点数: {len(canal_params.get('width_profile', []))}",
         })
-        if "mean_berm_width_m" in canal_params:
+        if "mean_estimated_berm_width_m" in canal_params:
             rows.append({
                 "类别": "渠道",
                 "子类": "马道",
                 "数量": 1,
-                "平均宽度(m)": canal_params["mean_berm_width_m"],
+                "平均估算马道宽度(m)": canal_params["mean_estimated_berm_width_m"],
                 "备注": "",
             })
 

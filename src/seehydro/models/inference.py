@@ -42,6 +42,7 @@ class InferencePipeline:
             self.seg_model = SegmentationModel(
                 model_name=cfg.get("model_name", "DeepLabV3Plus"),
                 encoder=cfg.get("encoder", "resnet101"),
+                encoder_weights=cfg.get("encoder_weights", "imagenet"),
                 in_channels=cfg.get("in_channels", 3),
                 num_classes=cfg.get("num_classes", 5),
                 device=self.device,
@@ -138,6 +139,7 @@ class InferencePipeline:
         self,
         tile_dir: str | Path,
         output_dir: str | Path,
+        normalize_method: str = "percentile",
     ) -> dict:
         """运行完整推理管线（分割 + 检测）.
 
@@ -149,7 +151,7 @@ class InferencePipeline:
 
         if self.seg_model:
             seg_output = output_dir / "segmentation"
-            result["segmentation"] = self.run_segmentation(tile_dir, seg_output)
+            result["segmentation"] = self.run_segmentation(tile_dir, seg_output, normalize_method=normalize_method)
 
         if self.det_model:
             result["detection"] = self.run_detection(tile_dir)

@@ -1,4 +1,4 @@
-"""渠道参数提取（中心线、宽度、马道宽度）."""
+"""渠道水面辅助结果提取（中心线、估算水面宽度、估算马道宽度）."""
 
 from pathlib import Path
 
@@ -8,8 +8,8 @@ import rasterio
 from loguru import logger
 from rasterio.features import shapes
 from scipy.interpolate import splprep, splev
-from shapely.geometry import LineString, Point, shape
-from shapely.ops import linemerge, unary_union
+from shapely.geometry import LineString, shape
+from shapely.ops import unary_union
 from skimage.morphology import skeletonize
 
 from seehydro.extraction.geo_measure import (
@@ -20,13 +20,14 @@ from seehydro.extraction.geo_measure import (
 
 
 def extract_mask_from_raster(mask_path: str | Path, class_id: int) -> tuple[np.ndarray, dict]:
-    """从分割掩膜中提取指定类别的二值掩膜."""
+    """从分割掩膜中提取指定类别的二值掩膜，并返回空间参考信息."""
     with rasterio.open(mask_path) as src:
         mask = src.read(1)
         profile = src.profile.copy()
         transform = src.transform
+        crs = None if src.crs is None else str(src.crs)
     binary = (mask == class_id).astype(np.uint8)
-    return binary, {"profile": profile, "transform": transform}
+    return binary, {"profile": profile, "transform": transform, "crs": crs}
 
 
 def extract_centerline(binary_mask: np.ndarray, transform, crs: str = "EPSG:4326") -> LineString | None:
@@ -99,7 +100,7 @@ def measure_width_profile(
     interval_m: float = 50,
     max_search_m: float = 200,
 ) -> gpd.GeoDataFrame:
-    """沿中心线采样渠道宽度.
+    """沿中心线采样估算水面宽度.
 
     Args:
         binary_mask: 渠道二值掩膜
@@ -110,7 +111,7 @@ def measure_width_profile(
         max_search_m: 垂线最大搜索半径（米）
 
     Returns:
-        GeoDataFrame，每行为一个采样点，含 width_m, geometry(Point)
+        GeoDataFrame，每行为一个采样点，含 width_m（估算水面宽度）, geometry(Point)
     """
     # 投影到UTM
     centroid = centerline.centroid
@@ -157,7 +158,11 @@ def measure_width_profile(
         })
 
     result = gpd.GeoDataFrame(records, crs=crs)
-    logger.info(f"渠道宽度采样: {len(result)} 个点, 平均宽度 {result['width_m'].mean():.1f}m")
+    if len(result) == 0 or "width_m" not in result.columns:
+        logger.warning("未提取到有效的估算水面宽度采样点")
+        return gpd.GeoDataFrame(columns=["geometry", "width_m", "distance_along_m"], crs=crs)
+
+    logger.info(f"估算水面宽度采样: {len(result)} 个点, 平均估算宽度 {result['width_m'].mean():.1f}m")
     return result
 
 
@@ -180,15 +185,15 @@ def extract_canal_params(
     berm_class_id: int = 3,
     interval_m: float = 50,
 ) -> dict:
-    """从分割掩膜提取完整的渠道参数.
+    """从分割掩膜提取基础渠道辅助结果.
 
     Returns:
         {
             "centerline": LineString,
             "width_profile": GeoDataFrame,
             "berm_width_profile": GeoDataFrame (如果有马道),
-            "mean_width_m": float,
-            "mean_berm_width_m": float,
+            "mean_estimated_water_surface_width_m": float,
+            "mean_estimated_berm_width_m": float,
         }
     """
     result = {}
@@ -196,21 +201,31 @@ def extract_canal_params(
     # 渠道水面
     water_mask, meta = extract_mask_from_raster(mask_path, water_class_id)
     transform = meta["transform"]
+    crs = meta.get("crs") or "EPSG:4326"
 
-    centerline = extract_centerline(water_mask, transform)
+    centerline = extract_centerline(water_mask, transform, crs=crs)
     if centerline is None:
         logger.warning("未能提取渠道中心线")
         return result
 
+    result["crs"] = crs
     result["centerline"] = centerline
-    result["width_profile"] = measure_width_profile(water_mask, centerline, transform, interval_m=interval_m)
-    result["mean_width_m"] = result["width_profile"]["width_m"].mean() if len(result["width_profile"]) > 0 else 0
+    result["width_profile"] = measure_width_profile(water_mask, centerline, transform, crs=crs, interval_m=interval_m)
+    result["mean_estimated_water_surface_width_m"] = (
+        result["width_profile"]["width_m"].mean() if len(result["width_profile"]) > 0 else 0
+    )
 
     # 马道
     berm_mask, _ = extract_mask_from_raster(mask_path, berm_class_id)
     if berm_mask.sum() > 0:
-        result["berm_width_profile"] = measure_width_profile(berm_mask, centerline, transform, interval_m=interval_m)
-        result["mean_berm_width_m"] = (
+        result["berm_width_profile"] = measure_width_profile(
+            berm_mask,
+            centerline,
+            transform,
+            crs=crs,
+            interval_m=interval_m,
+        )
+        result["mean_estimated_berm_width_m"] = (
             result["berm_width_profile"]["width_m"].mean() if len(result["berm_width_profile"]) > 0 else 0
         )
 

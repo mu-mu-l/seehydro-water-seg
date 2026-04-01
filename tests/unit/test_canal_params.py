@@ -77,3 +77,20 @@ def test_measure_width_profile_水平渠道_宽度在合理范围内():
 
     # 额外兜底：宽度应在合理量级内（米）
     assert 50 <= mean_width <= 500
+
+
+def test_measure_width_profile_无有效交点_返回空表而不报错():
+    mask, transform, _, _, _ = _build_horizontal_canal_case()
+    zero_mask = np.zeros_like(mask)
+    centerline = LineString([(114.0, 34.0), (114.01, 34.0)])
+
+    profile = measure_width_profile(
+        binary_mask=zero_mask,
+        centerline=centerline,
+        transform=transform,
+        interval_m=100,
+        max_search_m=100,
+    )
+
+    assert len(profile) == 0
+    assert "width_m" in profile.columns

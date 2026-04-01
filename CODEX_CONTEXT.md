@@ -9,7 +9,7 @@
 5. **不要用 importlib.import_module 动态导入**，用固定 import
 
 ## 项目概述
-南水北调中线工程参数遥感提取系统。从卫星影像中自动提取渠道宽度、桥梁、倒虹吸、渡槽等建筑物参数。
+南水北调中线渠道水面识别与辅助分析项目。当前最成熟方向是从卫星/底图影像中识别渠道水面，并输出估算水面宽度等辅助结果。
 
 ## 包结构
 ```
@@ -122,7 +122,7 @@ class DetectionModel:
 ### extract_canal_params
 ```python
 def extract_canal_params(mask_path, water_class_id=1, berm_class_id=3, interval_m=50) -> dict:
-    # Returns: {"centerline": LineString, "width_profile": GeoDataFrame, "mean_width_m": float, ...}
+    # Returns: {"centerline": LineString, "width_profile": GeoDataFrame, "mean_estimated_water_surface_width_m": float, ...}
 ```
 
 ### InferencePipeline

@@ -90,3 +90,50 @@ def test_保存加载切片索引_有效切片列表_读回一致(test_geotiff_p
     original_paths = {str(t.tile_path) for t in tile_infos}
     loaded_paths = {str(t.tile_path) for t in loaded_infos}
     assert loaded_paths == original_paths
+
+
+def test_reassemble_预测切片_可正确回拼(test_geotiff_path: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "tiles"
+    merged_path = tmp_path / "merged_mask.tif"
+    generator = TileGenerator(tile_size=128, overlap=0.0)
+
+    tile_infos = generator.generate_tiles(
+        image_path=test_geotiff_path,
+        output_dir=output_dir,
+        prefix="tile",
+        min_valid_ratio=0.5,
+    )
+
+    tiles = {}
+    for info in tile_infos:
+        mask = np.full((info.height, info.width), fill_value=1, dtype=np.uint8)
+        mask_path = output_dir / f"{info.tile_path.stem}_mask.tif"
+        with rasterio.open(
+            mask_path,
+            "w",
+            driver="GTiff",
+            height=info.height,
+            width=info.width,
+            count=1,
+            dtype="uint8",
+            crs="EPSG:4326",
+            transform=from_origin(100.0, 30.0, 0.0001, 0.0001),
+        ) as dst:
+            dst.write(mask, 1)
+        tiles[info.tile_path.stem] = mask_path
+
+    with rasterio.open(test_geotiff_path) as src:
+        profile = src.profile.copy()
+
+    merged = generator.reassemble(
+        tiles=tiles,
+        tile_infos=tile_infos,
+        output_path=merged_path,
+        original_profile=profile,
+    )
+
+    with rasterio.open(merged) as src:
+        data = src.read(1)
+        assert src.width == 256
+        assert src.height == 256
+        assert np.all(data == 1)

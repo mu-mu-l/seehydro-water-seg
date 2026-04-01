@@ -989,15 +989,38 @@ find data/tiles -maxdepth 1 -type f -name "*.tif" | sort | head -n 20
 - 按经纬度范围下载在线地图瓦片
 - 再拼接成 GeoTIFF
 
-当前代码里已经写了这些 provider：
+当前代码里优先可直接用的是这些 provider：
 
-- `tianditu`
-- `tianditu_label`
+- `tianditu_img`
+- `google_satellite`
 
 这条路线适合：
 
 - 你想快速拿一个区域的高分底图
 - 你已经有天地图 key
+
+现在可以直接走 CLI：
+
+```bash
+export TDT_KEY=你的天地图密钥
+
+python -m seehydro.cli download tiles \
+  --bbox 114.35,38.20,114.39,38.23 \
+  --provider tianditu_img \
+  --zoom 18 \
+  --output-dir raw_geotiff
+```
+
+如果你不想写环境变量，也可以直接传：
+
+```bash
+python -m seehydro.cli download tiles \
+  --bbox 114.35,38.20,114.39,38.23 \
+  --provider tianditu_img \
+  --zoom 18 \
+  --api-key 你的天地图密钥 \
+  --output-dir raw_geotiff
+```
 
 ### 方式 D：从现成平台手工下载，再放进项目
 
@@ -1766,22 +1789,154 @@ python -m seehydro.cli preprocess tile \
 
 先把预期说清楚：
 
-- 当前仓库里的 `infer` CLI 还是 `TODO`
+- 当前仓库已经补了最小 `infer` CLI
+- 但它现在主要解决“批量切片推理”和“输出分割掩膜/检测结果 JSON”
+- 还不是完整的“整图回拼 + 提参 + 报告”一键生产链路
 
-所以你现在训练完以后，最现实的用途不是“一键生产部署”，而是：
+所以你现在训练完以后，最现实的用途是：
 
 1. 确认你已经具备一个可继续优化的模型
-2. 继续补标注数据
-3. 继续训练更好的版本
-4. 后续再补推理流程
+2. 对切片目录做最小推理验证
+3. 继续补标注数据
+4. 继续训练更好的版本
 
 也就是说，当前项目阶段更像：
 
-- 先把训练闭环跑通
+- 先把训练 + 最小推理闭环跑通
 
 而不是：
 
 - 一键全自动落地系统
+
+### 最小推理命令
+
+如果你已经训练出了：
+
+```text
+models/seg_water/seg_best.pth
+```
+
+可以直接对切片目录做分割推理：
+
+```bash
+python -m seehydro.cli infer \
+  --input data/tiles \
+  --config configs/segmentation_binary_water.yaml \
+  --model-seg models/seg_water/seg_best.pth \
+  --output outputs/infer
+```
+
+输出里最重要的是：
+
+- `outputs/infer/segmentation/`
+
+里面会保存每个切片对应的预测掩膜 GeoTIFF。
+
+如果你的输入目录里同时有：
+
+- 推理掩膜
+- `tile_index.csv`
+
+那么现在还会额外输出：
+
+- `outputs/infer/merged/*.tif`
+
+也就是按切片索引自动回拼后的整图掩膜。
+
+## 15.1 推理后怎么先提最基础的渠道参数
+
+如果你已经拿到了分割掩膜，可以直接先提最基础的一批辅助结果：
+
+- 中心线
+- 沿程估算水面宽度采样点
+- 平均估算水面宽度
+
+命令示例：
+
+```bash
+python -m seehydro.cli extract \
+  --input outputs/infer/merged \
+  --output outputs/extraction \
+  --sample-interval 50
+```
+
+这里输入目录里应当放的是：
+
+- `*_merged_mask.tif`
+
+也就是回拼后的整图掩膜，而不是原始影像或普通切片。
+
+当前这条命令会输出：
+
+- `outputs/extraction/vectors/*_centerline.geojson`
+- `outputs/extraction/vectors/*_width_profile.geojson`
+- `outputs/extraction/reports/*_summary.csv`
+- `outputs/extraction/reports/*_summary.xlsx`
+- `outputs/extraction/summary.json`
+
+这一步已经够你先做工程判断：
+
+- 这张掩膜是不是提得出连续中心线
+- 宽度采样是不是大体合理
+- 平均宽度是不是落在正常量级
+
+## 15.2 如果你不想一段段敲命令，可以直接跑最小流水线
+
+现在仓库里已经补了一个最小端到端入口：
+
+```bash
+python -m seehydro.cli pipeline quickstart \
+  --bbox 114.35,38.20,114.39,38.23 \
+  --provider tianditu_img \
+  --api-key 你的天地图密钥 \
+  --route data/route/snbd_centerline.geojson \
+  --config configs/segmentation_binary_water.yaml \
+  --buffer 2000 \
+  --tile-size 512 \
+  --overlap 0.25 \
+  --model-seg models/seg_water/seg_best.pth \
+  --workspace outputs/pipeline_run
+```
+
+这条命令会尽量按下面顺序串起来：
+
+1. 下载底图到工作目录
+2. 按线路裁剪
+3. 生成切片和 `tile_index.csv`
+4. 如果提供了 `--model-seg`，就执行分割推理
+5. 自动回拼整图掩膜
+6. 自动提最基础的水面辅助结果
+
+如果你当前还没有模型，只是想先把数据准备好，也可以不传 `--model-seg`。
+
+## 15.3 标注完成后，怎么一条命令整理训练数据
+
+如果你已经在 `labelme_work/` 里完成了标注，现在不需要再手动分别跑“转换脚本”和“检查脚本”。
+
+可以直接用：
+
+```bash
+python -m seehydro.cli train prepare-seg-data \
+  --labelme-dir labelme_work \
+  --output-root data/seg_water \
+  --water-label water \
+  --num-classes 2
+```
+
+这条命令会自动做两步：
+
+1. 把 Labelme JSON 转成：
+   `data/seg_water/images/*.tif`
+   `data/seg_water/masks/*.tif`
+2. 自动检查训练数据是否配对、尺寸一致、类别值合法
+
+如果你已经在走 `pipeline quickstart`，也可以额外加：
+
+```bash
+--labelme-dir labelme_work
+```
+
+这样在切片之后，它会继续帮你把标注整理成训练数据。
 
 ## 16. 新手最容易犯的错误
 

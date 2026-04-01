@@ -51,19 +51,19 @@ def mask_to_rgb(mask: np.ndarray, colors: dict[int, list[int]] | None = None) ->
 def plot_width_profile(
     width_gdf: gpd.GeoDataFrame,
     output_path: str | Path | None = None,
-    title: str = "渠道宽度沿程变化",
+    title: str = "估算水面宽度沿程变化",
 ) -> plt.Figure:
-    """绘制渠道宽度沿程变化图."""
+    """绘制估算水面宽度沿程变化图."""
     fig, ax = plt.subplots(figsize=(14, 5))
 
     ax.plot(width_gdf["distance_along_m"], width_gdf["width_m"], "b-o", markersize=3, linewidth=1)
     ax.fill_between(width_gdf["distance_along_m"], 0, width_gdf["width_m"], alpha=0.2, color="blue")
 
     mean_width = width_gdf["width_m"].mean()
-    ax.axhline(y=mean_width, color="r", linestyle="--", label=f"平均宽度: {mean_width:.1f}m")
+    ax.axhline(y=mean_width, color="r", linestyle="--", label=f"平均估算宽度: {mean_width:.1f}m")
 
     ax.set_xlabel("沿程距离 (m)", fontsize=12)
-    ax.set_ylabel("渠道宽度 (m)", fontsize=12)
+    ax.set_ylabel("估算水面宽度 (m)", fontsize=12)
     ax.set_title(title, fontsize=14)
     ax.legend()
     ax.grid(True, alpha=0.3)
