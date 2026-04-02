@@ -10,6 +10,7 @@ from typing import Annotated
 
 import typer
 from loguru import logger
+from tqdm import tqdm
 
 from seehydro import __version__
 from seehydro.acquisition.route import load_route
@@ -728,7 +729,8 @@ def run_extract(
     summary_rows = []
     saved_vector_files = []
 
-    for mask_path in mask_files:
+    for mask_path in tqdm(mask_files, desc="参数提取", unit="mask"):
+        logger.info("开始提取掩膜参数: {}", mask_path)
         canal_params = extract_canal_params(mask_path=mask_path, interval_m=sample_interval)
         if not canal_params:
             logger.warning("跳过无法提取水面辅助参数的掩膜: {}", mask_path)
@@ -768,6 +770,12 @@ def run_extract(
         summary_df = generate_summary_report(canal_params=canal_params)
         report_name = f"{prefix}_summary"
         save_report(summary_df, reports_dir, name=report_name)
+        logger.info(
+            "完成掩膜参数提取: mask={}, mean_water_width_m={}, samples={}",
+            mask_path,
+            canal_params.get("mean_estimated_water_surface_width_m", 0.0),
+            len(canal_params.get("width_profile", [])),
+        )
 
     if not summary_rows:
         typer.echo("未能从输入掩膜中提取到有效水面辅助参数", err=True)
@@ -1120,10 +1128,12 @@ def pipeline_quickstart(
             reports_dir = extract_dir / "reports"
             summary_rows = []
 
-            for merged_mask in merged_outputs:
+            for merged_mask in tqdm(merged_outputs, desc="Pipeline 提参", unit="mask"):
                 merged_mask_path = Path(merged_mask)
+                logger.info("开始提取回拼掩膜参数: {}", merged_mask_path)
                 canal_params = extract_canal_params(merged_mask_path, interval_m=sample_interval)
                 if not canal_params:
+                    logger.warning("跳过无法提取水面辅助参数的回拼掩膜: {}", merged_mask_path)
                     continue
 
                 prefix = merged_mask_path.stem
@@ -1147,6 +1157,12 @@ def pipeline_quickstart(
                 })
                 report_df = generate_summary_report(canal_params=canal_params)
                 save_report(report_df, reports_dir, name=f"{prefix}_summary")
+                logger.info(
+                    "完成回拼掩膜参数提取: mask={}, mean_water_width_m={}, samples={}",
+                    merged_mask_path,
+                    canal_params.get("mean_estimated_water_surface_width_m", 0.0),
+                    len(canal_params.get("width_profile", [])),
+                )
 
             if summary_rows:
                 summary_json_path = extract_dir / "summary.json"
