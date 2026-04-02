@@ -1,8 +1,8 @@
 """分割模型训练脚本."""
 
+from copy import deepcopy
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn as nn
 from loguru import logger
@@ -90,12 +90,21 @@ def train_segmentation(
     if val_size >= len(full_dataset):
         val_size = 1
     train_size = len(full_dataset) - val_size
-    train_dataset, val_dataset = random_split(
+    train_subset, val_subset = random_split(
         full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(random_seed)
     )
 
-    # 为不同split设置不同transform
-    train_dataset.dataset.transform = train_transform
+    # random_split 返回的 Subset 共享同一个 dataset，需要拆成独立实例避免 transform 串用。
+    train_dataset = deepcopy(full_dataset)
+    train_dataset.image_files = [full_dataset.image_files[i] for i in train_subset.indices]
+    train_dataset.mask_files = [full_dataset.mask_files[i] for i in train_subset.indices]
+    train_dataset.transform = train_transform
+
+    val_dataset = deepcopy(full_dataset)
+    val_dataset.image_files = [full_dataset.image_files[i] for i in val_subset.indices]
+    val_dataset.mask_files = [full_dataset.mask_files[i] for i in val_subset.indices]
+    val_dataset.transform = val_transform
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -104,7 +113,6 @@ def train_segmentation(
         pin_memory=True,
     )
 
-    val_dataset.dataset.transform = val_transform
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,

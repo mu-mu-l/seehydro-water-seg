@@ -118,7 +118,11 @@ class SegmentationModel:
     def load_weights(self, path: str | Path) -> None:
         """加载模型权重."""
         path = Path(path)
-        state_dict = torch.load(path, map_location=self.device, weights_only=True)
+        try:
+            state_dict = torch.load(path, map_location=self.device, weights_only=True)
+        except TypeError:
+            # 兼容不支持 weights_only 参数的旧版 PyTorch。
+            state_dict = torch.load(path, map_location=self.device)
         self.model.load_state_dict(state_dict)
         logger.info(f"加载分割模型权重: {path}")
 

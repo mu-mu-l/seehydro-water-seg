@@ -61,6 +61,7 @@ class InferencePipeline:
         tile_dir: str | Path,
         output_dir: str | Path,
         normalize_method: str = "percentile",
+        batch_size: int = 1,
     ) -> dict[str, Path]:
         """对切片目录中所有影像运行分割推理.
 
@@ -68,6 +69,7 @@ class InferencePipeline:
             tile_dir: 切片目录
             output_dir: 输出目录（分割掩膜）
             normalize_method: 归一化方法
+            batch_size: 分割推理批次大小
 
         Returns:
             {tile_name: mask_path} 映射
@@ -78,34 +80,51 @@ class InferencePipeline:
         tile_dir = Path(tile_dir)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        if batch_size <= 0:
+            raise ValueError(f"batch_size 必须大于 0，当前值: {batch_size}")
 
-        tile_files = sorted(tile_dir.glob("*.tif"))
+        tile_files = sorted({*tile_dir.glob("*.tif"), *tile_dir.glob("*.tiff")})
         results = {}
+        for start in tqdm(range(0, len(tile_files), batch_size), desc="分割推理"):
+            batch_paths = tile_files[start : start + batch_size]
+            batch_tensors: list[torch.Tensor] = []
+            batch_profiles: list[tuple[Path, dict]] = []
 
-        for tile_path in tqdm(tile_files, desc="分割推理"):
-            with rasterio.open(tile_path) as src:
-                data = src.read().astype(np.float32)  # (C, H, W)
-                profile = src.profile.copy()
+            for tile_path in batch_paths:
+                with rasterio.open(tile_path) as src:
+                    data = src.read().astype(np.float32)  # (C, H, W)
+                    profile = src.profile.copy()
 
-            # 归一化
-            data = normalize_image(data, method=normalize_method)
+                data = normalize_image(data, method=normalize_method)
 
-            # 只取前N个通道
-            in_channels = self.seg_model.model.encoder._in_channels if hasattr(self.seg_model.model, 'encoder') else 3
-            if data.shape[0] > in_channels:
-                data = data[:in_channels]
+                in_channels = self.seg_model.model.encoder._in_channels if hasattr(self.seg_model.model, "encoder") else 3
+                if data.shape[0] < in_channels:
+                    raise ValueError(
+                        f"输入影像通道数不足: tile={tile_path}, expected>={in_channels}, actual={data.shape[0]}"
+                    )
+                if data.shape[0] > in_channels:
+                    data = data[:in_channels]
 
-            # 推理
-            tensor = torch.from_numpy(data).float()
-            mask = self.seg_model.predict(tensor)  # (H, W)
+                batch_tensors.append(torch.from_numpy(data).float())
+                batch_profiles.append((tile_path, profile))
 
-            # 保存掩膜
-            mask_path = output_dir / tile_path.name
-            profile.update(count=1, dtype="uint8", nodata=255)
-            with rasterio.open(mask_path, "w", **profile) as dst:
-                dst.write(mask.numpy().astype(np.uint8), 1)
+            batch_tensor = torch.stack(batch_tensors, dim=0)
+            batch_masks = self.seg_model.predict(batch_tensor)
+            if batch_masks.dim() == 2:
+                batch_masks = batch_masks.unsqueeze(0)
 
-            results[tile_path.stem] = mask_path
+            for tile_path, profile, mask in zip(
+                (item[0] for item in batch_profiles),
+                (item[1] for item in batch_profiles),
+                batch_masks,
+                strict=True,
+            ):
+                mask_path = output_dir / tile_path.name
+                profile.update(count=1, dtype="uint8", nodata=255)
+                with rasterio.open(mask_path, "w", **profile) as dst:
+                    dst.write(mask.numpy().astype(np.uint8), 1)
+
+                results[tile_path.stem] = mask_path
 
         logger.info(f"分割推理完成: {len(results)} 个切片")
         return results
@@ -124,7 +143,7 @@ class InferencePipeline:
             raise RuntimeError("检测模型未加载")
 
         tile_dir = Path(tile_dir)
-        tile_files = sorted(tile_dir.glob("*.tif"))
+        tile_files = sorted({*tile_dir.glob("*.tif"), *tile_dir.glob("*.tiff")})
         results = {}
 
         for tile_path in tqdm(tile_files, desc="检测推理"):
@@ -140,6 +159,7 @@ class InferencePipeline:
         tile_dir: str | Path,
         output_dir: str | Path,
         normalize_method: str = "percentile",
+        batch_size: int = 1,
     ) -> dict:
         """运行完整推理管线（分割 + 检测）.
 
@@ -151,7 +171,12 @@ class InferencePipeline:
 
         if self.seg_model:
             seg_output = output_dir / "segmentation"
-            result["segmentation"] = self.run_segmentation(tile_dir, seg_output, normalize_method=normalize_method)
+            result["segmentation"] = self.run_segmentation(
+                tile_dir,
+                seg_output,
+                normalize_method=normalize_method,
+                batch_size=batch_size,
+            )
 
         if self.det_model:
             result["detection"] = self.run_detection(tile_dir)

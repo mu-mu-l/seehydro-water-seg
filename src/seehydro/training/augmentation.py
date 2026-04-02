@@ -6,6 +6,7 @@ import albumentations as A
 def get_seg_train_transform(input_size: int = 512) -> A.Compose:
     """分割训练数据增强."""
     return A.Compose([
+        A.PadIfNeeded(min_height=input_size, min_width=input_size, border_mode=0, fill=0, fill_mask=0, p=1.0),
         A.RandomCrop(height=input_size, width=input_size, p=1.0),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.5),
@@ -23,5 +24,6 @@ def get_seg_train_transform(input_size: int = 512) -> A.Compose:
 def get_seg_val_transform(input_size: int = 512) -> A.Compose:
     """分割验证数据增强（仅裁剪）."""
     return A.Compose([
+        A.PadIfNeeded(min_height=input_size, min_width=input_size, border_mode=0, fill=0, fill_mask=0, p=1.0),
         A.CenterCrop(height=input_size, width=input_size, p=1.0),
     ])

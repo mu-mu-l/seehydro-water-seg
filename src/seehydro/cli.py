@@ -615,7 +615,12 @@ def run_infer(
     )
 
     normalize_method = str(seg_cfg.get("normalize_method", "percentile"))
-    result = pipeline.run_full_pipeline(tile_dir=input, output_dir=output, normalize_method=normalize_method)
+    result = pipeline.run_full_pipeline(
+        tile_dir=input,
+        output_dir=output,
+        normalize_method=normalize_method,
+        batch_size=batch_size,
+    )
     summary: dict[str, object] = {}
 
     if "segmentation" in result:
@@ -1073,6 +1078,7 @@ def pipeline_quickstart(
             tile_dir=tiles_dir,
             output_dir=infer_dir / "segmentation",
             normalize_method=str(seg_cfg.get("normalize_method", "percentile")),
+            batch_size=1,
         )
         outputs["segmentation_count"] = len(seg_results)
         outputs["segmentation_output_dir"] = str(infer_dir / "segmentation")
