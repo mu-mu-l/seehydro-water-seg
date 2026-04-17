@@ -5,6 +5,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import geopandas as gpd
+import json
+from shapely.geometry import Point
 from typer.testing import CliRunner
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -13,6 +16,8 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from seehydro.cli import _load_seg_inference_config, _parse_bbox, app
+from seehydro.export.report import REPORT_COLUMNS, generate_summary_report
+from seehydro.export.vector_io import _sanitize_shapefile_columns
 
 
 runner = CliRunner()
@@ -138,6 +143,92 @@ def test_export_输入不存在_直接报错(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "输入路径不存在" in _combined_output(result)
+
+
+def test_sanitize_shapefile_columns_长字段名会被压缩且保持唯一() -> None:
+    gdf = gpd.GeoDataFrame(
+        [{
+            "mean_estimated_water_surface_width_m": 12.3,
+            "distance_along_m": 45.6,
+            "distance_along_meter": 78.9,
+        }],
+        geometry=[Point(114.0, 34.0)],
+        crs="EPSG:4326",
+    )
+
+    sanitized = _sanitize_shapefile_columns(gdf)
+    columns = [col for col in sanitized.columns if col != sanitized.geometry.name]
+
+    assert "mean_estim" in columns
+    assert "distance_a" in columns
+    assert len(columns) == len(set(columns))
+    assert all(len(col) <= 10 for col in columns)
+
+
+def test_export_可自动识别_vectors_子目录(tmp_path: Path) -> None:
+    extract_dir = tmp_path / "extraction"
+    vectors_dir = extract_dir / "vectors"
+    vectors_dir.mkdir(parents=True)
+
+    gdf = gpd.GeoDataFrame([{"name": "demo"}], geometry=[Point(114.0, 34.0)], crs="EPSG:4326")
+    gdf.to_file(vectors_dir / "demo.geojson", driver="GeoJSON")
+    (extract_dir / "summary.json").write_text(json.dumps([{"mask": "x", "sample_count": 1}]), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "export",
+            "--input",
+            str(extract_dir),
+            "--format",
+            "shapefile",
+            "--report",
+            str(tmp_path / "report"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (vectors_dir / "export_shapefile" / "demo.shp").exists()
+    assert (tmp_path / "report" / "extract_summary.csv").exists()
+
+
+def test_pipeline_summary_rows_字段与_extract_保持一致() -> None:
+    canal_params = {
+        "mean_estimated_water_surface_width_m": 12.5,
+        "mean_estimated_berm_width_m": 4.2,
+        "width_profile": [1, 2, 3],
+    }
+
+    summary_row = {
+        "mask": "demo_merged_mask.tif",
+        "mean_estimated_water_surface_width_m": canal_params.get("mean_estimated_water_surface_width_m", 0.0),
+        "sample_count": len(canal_params.get("width_profile", [])),
+        "mean_estimated_berm_width_m": canal_params.get("mean_estimated_berm_width_m", 0.0),
+    }
+
+    assert summary_row == {
+        "mask": "demo_merged_mask.tif",
+        "mean_estimated_water_surface_width_m": 12.5,
+        "sample_count": 3,
+        "mean_estimated_berm_width_m": 4.2,
+    }
+
+
+def test_generate_summary_report_使用统一列结构() -> None:
+    canal_params = {
+        "mean_estimated_water_surface_width_m": 12.5,
+        "mean_estimated_berm_width_m": 4.2,
+        "width_profile": [1, 2, 3],
+    }
+
+    report_df = generate_summary_report(canal_params=canal_params)
+
+    assert list(report_df.columns) == REPORT_COLUMNS
+    assert report_df.iloc[0]["指标项"] == "平均估算宽度"
+    assert report_df.iloc[0]["指标值"] == 12.5
+    assert report_df.iloc[0]["单位"] == "m"
+    assert report_df.iloc[1]["子类"] == "马道"
+    assert report_df.iloc[1]["指标值"] == 4.2
 
 
 def test_pipeline_quickstart_缺少输入_直接报错(tmp_path: Path) -> None:

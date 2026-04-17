@@ -3,9 +3,15 @@
 import numpy as np
 import pytest
 from rasterio.transform import from_bounds
+from pyproj import Transformer
 from shapely.geometry import LineString
 
-from seehydro.extraction.canal_params import extract_centerline, measure_width_profile
+from seehydro.extraction.canal_params import (
+    extract_centerline,
+    extract_canal_params,
+    measure_width_profile,
+    vectorize_mask_gdf,
+)
 from seehydro.extraction.geo_measure import measure_distance_m, pixel_to_geo
 
 
@@ -94,3 +100,95 @@ def test_measure_width_profile_无有效交点_返回空表而不报错():
 
     assert len(profile) == 0
     assert "width_m" in profile.columns
+
+
+def test_vectorize_mask_gdf_水平渠道_返回单个面要素():
+    mask, transform, _, _, _ = _build_horizontal_canal_case()
+
+    gdf = vectorize_mask_gdf(mask, transform, class_name="water")
+
+    assert len(gdf) == 1
+    assert "class_name" in gdf.columns
+    assert gdf.iloc[0]["class_name"] == "water"
+    assert gdf.geometry.iloc[0].geom_type in {"Polygon", "MultiPolygon"}
+    assert gdf.geometry.iloc[0].area > 0
+
+
+def test_extract_centerline_弯曲渠道_不应出现明显回跳():
+    height, width = 160, 220
+    mask = np.zeros((height, width), dtype=np.uint8)
+
+    for col in range(20, 200):
+        row_mid = int(70 + 18 * np.sin((col - 20) / 28))
+        mask[max(0, row_mid - 6):min(height, row_mid + 6), col] = 1
+
+    transform = from_bounds(114.0, 34.0, 114.03, 34.02, width, height)
+    centerline = extract_centerline(mask, transform)
+
+    assert centerline is not None
+    coords = list(centerline.coords)
+    xs = np.array([pt[0] for pt in coords])
+
+    diffs = np.diff(xs)
+    non_decreasing_ratio = float(np.mean(diffs >= -1e-9))
+    non_increasing_ratio = float(np.mean(diffs <= 1e-9))
+
+    assert max(non_decreasing_ratio, non_increasing_ratio) > 0.9
+
+
+def test_measure_width_profile_投影坐标系下也能得到合理宽度():
+    height, width = 120, 200
+    mask = np.zeros((height, width), dtype=np.uint8)
+    mask[50:70, 10:190] = 1
+
+    lonlat_to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+    left, bottom = lonlat_to_3857.transform(114.0, 34.0)
+    right, top = lonlat_to_3857.transform(114.02, 34.012)
+    transform = from_bounds(left, bottom, right, top, width, height)
+
+    row_mid = 60
+    p_start = pixel_to_geo((10, row_mid), transform)
+    p_end = pixel_to_geo((width - 10, row_mid), transform)
+    centerline = LineString([p_start, p_end])
+
+    profile = measure_width_profile(
+        binary_mask=mask,
+        centerline=centerline,
+        transform=transform,
+        crs="EPSG:3857",
+        interval_m=100,
+        max_search_m=1000,
+    )
+
+    assert len(profile) > 0
+    assert profile["width_m"].mean() > 0
+
+
+def test_extract_canal_params_中心线失败时仍保留掩膜面结果(tmp_path):
+    import rasterio
+
+    mask_path = tmp_path / "tiny_mask.tif"
+    data = np.zeros((8, 8), dtype=np.uint8)
+    data[3, 3] = 1
+
+    profile = {
+        "driver": "GTiff",
+        "height": 8,
+        "width": 8,
+        "count": 1,
+        "dtype": "uint8",
+        "crs": "EPSG:4326",
+        "transform": from_bounds(114.0, 34.0, 114.001, 34.001, 8, 8),
+        "nodata": 0,
+    }
+
+    with rasterio.open(mask_path, "w", **profile) as dst:
+        dst.write(data, 1)
+
+    result = extract_canal_params(mask_path)
+
+    assert result["crs"] == "EPSG:4326"
+    assert "water_mask_polygon" in result
+    assert len(result["water_mask_polygon"]) == 1
+    assert "centerline" not in result
+    assert len(result["width_profile"]) == 0

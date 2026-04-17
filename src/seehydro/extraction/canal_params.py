@@ -1,6 +1,7 @@
 """渠道水面辅助结果提取（中心线、估算水面宽度、估算马道宽度）."""
 
 from pathlib import Path
+from collections import deque
 
 import geopandas as gpd
 import numpy as np
@@ -16,6 +17,7 @@ from seehydro.extraction.geo_measure import (
     compute_perpendicular,
     get_utm_crs,
     pixel_to_geo,
+    point_to_wgs84,
 )
 
 
@@ -44,16 +46,12 @@ def extract_centerline(binary_mask: np.ndarray, transform, crs: str = "EPSG:4326
     # 骨架化
     skeleton = skeletonize(binary_mask > 0)
 
-    # 骨架像素坐标
-    rows, cols = np.where(skeleton)
-    if len(rows) < 3:
+    pixel_path = _extract_skeleton_path(skeleton)
+    if len(pixel_path) < 3:
         return None
 
     # 转地理坐标
-    points = [pixel_to_geo((int(c), int(r)), transform) for r, c in zip(rows, cols)]
-
-    # 按距离排序（简单贪心最近邻）
-    ordered = _order_points_greedy(points)
+    ordered = [pixel_to_geo((int(c), int(r)), transform) for r, c in pixel_path]
 
     if len(ordered) < 3:
         return None
@@ -64,18 +62,78 @@ def extract_centerline(binary_mask: np.ndarray, transform, crs: str = "EPSG:4326
     return smoothed
 
 
-def _order_points_greedy(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """贪心最近邻排序点集."""
-    remaining = list(points)
-    ordered = [remaining.pop(0)]
+def _extract_skeleton_path(skeleton: np.ndarray) -> list[tuple[int, int]]:
+    """从骨架中提取一条有序主路径.
 
-    while remaining:
-        last = ordered[-1]
-        dists = [(i, (p[0] - last[0])**2 + (p[1] - last[1])**2) for i, p in enumerate(remaining)]
-        nearest_idx = min(dists, key=lambda x: x[1])[0]
-        ordered.append(remaining.pop(nearest_idx))
+    基于 8 邻域连通图，优先取最长简单路径近似，避免最近邻串点导致的跨掩膜乱连。
+    """
+    rows, cols = np.where(skeleton)
+    pixels = {(int(r), int(c)) for r, c in zip(rows, cols)}
+    if len(pixels) < 3:
+        return []
 
-    return ordered
+    adjacency: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    offsets = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1),
+    ]
+
+    for pixel in pixels:
+        r, c = pixel
+        neighbors = []
+        for dr, dc in offsets:
+            candidate = (r + dr, c + dc)
+            if candidate in pixels:
+                neighbors.append(candidate)
+        adjacency[pixel] = neighbors
+
+    endpoints = [node for node, neighbors in adjacency.items() if len(neighbors) <= 1]
+    start = min(endpoints, key=lambda p: (p[1], p[0])) if endpoints else min(pixels, key=lambda p: (p[1], p[0]))
+
+    first = _farthest_node(start, adjacency)
+    second, parents = _farthest_node(first, adjacency, return_parents=True)
+
+    path = [second]
+    while path[-1] != first:
+        parent = parents.get(path[-1])
+        if parent is None:
+            break
+        path.append(parent)
+    path.reverse()
+    return path
+
+
+def _farthest_node(
+    start: tuple[int, int],
+    adjacency: dict[tuple[int, int], list[tuple[int, int]]],
+    return_parents: bool = False,
+):
+    """在骨架图上做 BFS，返回最远节点."""
+    visited = {start}
+    parents: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    distance = {start: 0}
+    queue = deque([start])
+    farthest = start
+
+    while queue:
+        node = queue.popleft()
+        farthest = max(
+            farthest,
+            node,
+            key=lambda p: (distance[p], -len(adjacency[p]), p[1], p[0]),
+        )
+        for neighbor in adjacency[node]:
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            parents[neighbor] = node
+            distance[neighbor] = distance[node] + 1
+            queue.append(neighbor)
+
+    if return_parents:
+        return farthest, parents
+    return farthest
 
 
 def _smooth_line(points: list[tuple[float, float]], smoothing: float = 0.001) -> LineString:
@@ -115,7 +173,8 @@ def measure_width_profile(
     """
     # 投影到UTM
     centroid = centerline.centroid
-    utm_crs = get_utm_crs(centroid.x, centroid.y)
+    centroid_lon, centroid_lat = point_to_wgs84(centroid.x, centroid.y, crs)
+    utm_crs = get_utm_crs(centroid_lon, centroid_lat)
 
     gdf_line = gpd.GeoDataFrame(geometry=[centerline], crs=crs)
     gdf_line_utm = gdf_line.to_crs(utm_crs)
@@ -179,6 +238,21 @@ def _vectorize_mask(
     return unary_union(polygons)
 
 
+def vectorize_mask_gdf(
+    binary_mask: np.ndarray,
+    transform,
+    crs: str = "EPSG:4326",
+    class_name: str = "water",
+) -> gpd.GeoDataFrame:
+    """将二值掩膜矢量化为 GeoDataFrame."""
+    geometry = _vectorize_mask(binary_mask, transform, crs)
+    if geometry is None or geometry.is_empty:
+        return gpd.GeoDataFrame(columns=["class_name", "pixel_area"], geometry=[], crs=crs)
+
+    records = [{"class_name": class_name, "pixel_area": int(binary_mask.sum())}]
+    return gpd.GeoDataFrame(records, geometry=[geometry], crs=crs)
+
+
 def extract_canal_params(
     mask_path: str | Path,
     water_class_id: int = 1,
@@ -203,12 +277,22 @@ def extract_canal_params(
     transform = meta["transform"]
     crs = meta.get("crs") or "EPSG:4326"
 
+    result["crs"] = crs
+    result["water_mask_polygon"] = vectorize_mask_gdf(
+        water_mask,
+        transform,
+        crs=crs,
+        class_name="water",
+    )
+    result["water_pixel_area"] = int(water_mask.sum())
+
     centerline = extract_centerline(water_mask, transform, crs=crs)
     if centerline is None:
-        logger.warning("未能提取渠道中心线")
+        logger.warning("未能提取渠道中心线，将仅保留掩膜面结果")
+        result["width_profile"] = gpd.GeoDataFrame(columns=["geometry", "width_m", "distance_along_m"], crs=crs)
+        result["mean_estimated_water_surface_width_m"] = 0
         return result
 
-    result["crs"] = crs
     result["centerline"] = centerline
     result["width_profile"] = measure_width_profile(water_mask, centerline, transform, crs=crs, interval_m=interval_m)
     result["mean_estimated_water_surface_width_m"] = (
@@ -218,6 +302,13 @@ def extract_canal_params(
     # 马道
     berm_mask, _ = extract_mask_from_raster(mask_path, berm_class_id)
     if berm_mask.sum() > 0:
+        result["berm_mask_polygon"] = vectorize_mask_gdf(
+            berm_mask,
+            transform,
+            crs=crs,
+            class_name="berm",
+        )
+        result["berm_pixel_area"] = int(berm_mask.sum())
         result["berm_width_profile"] = measure_width_profile(
             berm_mask,
             centerline,

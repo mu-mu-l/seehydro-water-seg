@@ -1848,7 +1848,9 @@ python -m seehydro.cli infer \
 如果你已经拿到了分割掩膜，可以直接先提最基础的一批辅助结果：
 
 - 中心线
+- 水面掩膜面
 - 沿程估算水面宽度采样点
+- 可选的马道掩膜面 / 马道宽度采样点
 - 平均估算水面宽度
 
 命令示例：
@@ -1868,17 +1870,28 @@ python -m seehydro.cli extract \
 
 当前这条命令会输出：
 
+- `outputs/extraction/vectors/*_water_mask.geojson`
 - `outputs/extraction/vectors/*_centerline.geojson`
 - `outputs/extraction/vectors/*_width_profile.geojson`
+- `outputs/extraction/vectors/*_berm_mask.geojson`（如果掩膜里有马道类别）
+- `outputs/extraction/vectors/*_berm_width_profile.geojson`（如果能提取到马道宽度）
 - `outputs/extraction/reports/*_summary.csv`
 - `outputs/extraction/reports/*_summary.xlsx`
 - `outputs/extraction/summary.json`
 
 这一步已经够你先做工程判断：
 
+- 掩膜面和中心线是不是大体对得上
 - 这张掩膜是不是提得出连续中心线
 - 宽度采样是不是大体合理
 - 平均宽度是不是落在正常量级
+
+补充说明：
+
+- 如果某张掩膜暂时提不出可靠中心线，`extract` 现在仍会尽量保留 `water_mask` 面结果，不会整张结果直接丢掉。
+- `summary.csv/xlsx` 现在统一使用一套列结构：
+  `类别 / 子类 / 数量 / 指标项 / 指标值 / 单位 / 备注`
+- 宽度属于“估算水面宽度”或“估算马道宽度”，只能用于辅助分析，不能直接当正式测绘或设计参数。
 
 ## 15.2 如果你不想一段段敲命令，可以直接跑最小流水线
 
@@ -1937,6 +1950,37 @@ python -m seehydro.cli train prepare-seg-data \
 ```
 
 这样在切片之后，它会继续帮你把标注整理成训练数据。
+
+## 15.4 结果导出怎么用
+
+现在 `export` 可以直接接收 `extract` 的结果根目录，也可以直接接 `vectors/` 子目录。
+
+例如下面两种都可以：
+
+```bash
+python -m seehydro.cli export \
+  --input outputs/extraction \
+  --format shapefile \
+  --report outputs/export_reports
+```
+
+```bash
+python -m seehydro.cli export \
+  --input outputs/extraction/vectors \
+  --format shapefile
+```
+
+典型输出包括：
+
+- `outputs/extraction/vectors/export_shapefile/*.shp`
+- `outputs/export_reports/extract_summary.csv`
+- `outputs/export_reports/extract_summary.xlsx`
+
+补充说明：
+
+- 导出 `shapefile` 时，程序会自动处理字段名长度限制，避免长字段名把导出搞坏。
+- `pipeline quickstart` 现在和单独执行 `extract` 的输出口径一致，都会尽量保留
+  `water_mask / centerline / width_profile / berm_mask / berm_width_profile / summary.json`。
 
 ## 16. 新手最容易犯的错误
 

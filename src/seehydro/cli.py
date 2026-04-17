@@ -272,8 +272,12 @@ def download_tiles(
         raise typer.Exit(code=1)
 
     logger.info(
-        "开始执行在线瓦片下载 ... provider={}, zoom={}, bbox={}, output_dir={}",
-        provider, zoom, bounds, output_dir,
+        "开始执行在线瓦片下载 ... provider={}, zoom={}, bbox={}, output_dir={}, key_suffix={}",
+        provider,
+        zoom,
+        bounds,
+        output_dir,
+        (resolved_key[-6:] if resolved_key else "None"),
     )
     downloader = TileDownloader(provider=provider, api_key=resolved_key)
     saved = downloader.download_tiles(bounds=bounds, zoom=zoom, output_dir=output_dir)
@@ -750,9 +754,19 @@ def run_extract(
             )
             saved_vector_files.append(save_geodataframe(centerline_gdf, vectors_dir / f"{prefix}_centerline.geojson"))
 
+        if "water_mask_polygon" in canal_params and len(canal_params["water_mask_polygon"]) > 0:
+            saved_vector_files.append(
+                save_geodataframe(canal_params["water_mask_polygon"], vectors_dir / f"{prefix}_water_mask.geojson")
+            )
+
         if "width_profile" in canal_params and len(canal_params["width_profile"]) > 0:
             saved_vector_files.append(
                 save_geodataframe(canal_params["width_profile"], vectors_dir / f"{prefix}_width_profile.geojson")
+            )
+
+        if "berm_mask_polygon" in canal_params and len(canal_params["berm_mask_polygon"]) > 0:
+            saved_vector_files.append(
+                save_geodataframe(canal_params["berm_mask_polygon"], vectors_dir / f"{prefix}_berm_mask.geojson")
             )
 
         if "berm_width_profile" in canal_params and len(canal_params["berm_width_profile"]) > 0:
@@ -806,6 +820,23 @@ def run_extract(
 _VALID_FORMATS = {"geojson", "shapefile"}
 
 
+def _resolve_export_geojson_inputs(input_path: Path) -> tuple[list[Path], Path]:
+    """解析 export 命令的 GeoJSON 输入位置."""
+    if input_path.is_file():
+        return [input_path], input_path.parent
+
+    direct_geojson = sorted(input_path.glob("*.geojson"))
+    if direct_geojson:
+        return direct_geojson, input_path
+
+    vectors_dir = input_path / "vectors"
+    nested_geojson = sorted(vectors_dir.glob("*.geojson")) if vectors_dir.is_dir() else []
+    if nested_geojson:
+        return nested_geojson, vectors_dir
+
+    return [], input_path
+
+
 @app.command("export")
 def run_export(
     input: Annotated[
@@ -839,9 +870,9 @@ def run_export(
     import geopandas as gpd
     import pandas as pd
 
-    geojson_files = sorted(input.glob("*.geojson")) if input.is_dir() else [input]
+    geojson_files, source_dir = _resolve_export_geojson_inputs(input)
     if not geojson_files:
-        typer.echo(f"错误：未在 {input} 找到可导出的 GeoJSON 文件", err=True)
+        typer.echo(f"错误：未在 {input} 或其 vectors 子目录找到可导出的 GeoJSON 文件", err=True)
         raise typer.Exit(code=1)
 
     results = {}
@@ -857,13 +888,18 @@ def run_export(
         typer.echo("错误：没有可导出的有效矢量结果", err=True)
         raise typer.Exit(code=1)
 
-    export_dir = input / f"export_{fmt}" if input.is_dir() else input.parent / f"export_{fmt}"
+    export_dir = source_dir / f"export_{fmt}"
     saved_files = export_all_results(results=results, output_dir=export_dir, formats=[fmt])
 
     report_files = []
     if report is not None:
-        summary_json = input.parent / "summary.json" if input.is_dir() else input.parent / "summary.json"
-        if summary_json.exists():
+        summary_candidates = []
+        if input.is_dir():
+            summary_candidates.extend([input / "summary.json", input.parent / "summary.json"])
+        else:
+            summary_candidates.extend([input.parent / "summary.json", input.parent.parent / "summary.json"])
+        summary_json = next((path for path in summary_candidates if path.exists()), None)
+        if summary_json is not None and summary_json.exists():
             summary_records = json.loads(summary_json.read_text(encoding="utf-8"))
             summary_df = pd.DataFrame(summary_records)
             report_files = [str(p) for p in save_report(summary_df, report, name="extract_summary")]
@@ -1147,13 +1183,20 @@ def pipeline_quickstart(
                         crs=canal_params.get("crs", "EPSG:4326"),
                     )
                     save_geodataframe(centerline_gdf, vectors_dir / f"{prefix}_centerline.geojson")
+                if "water_mask_polygon" in canal_params and len(canal_params["water_mask_polygon"]) > 0:
+                    save_geodataframe(canal_params["water_mask_polygon"], vectors_dir / f"{prefix}_water_mask.geojson")
                 if "width_profile" in canal_params and len(canal_params["width_profile"]) > 0:
                     save_geodataframe(canal_params["width_profile"], vectors_dir / f"{prefix}_width_profile.geojson")
+                if "berm_mask_polygon" in canal_params and len(canal_params["berm_mask_polygon"]) > 0:
+                    save_geodataframe(canal_params["berm_mask_polygon"], vectors_dir / f"{prefix}_berm_mask.geojson")
+                if "berm_width_profile" in canal_params and len(canal_params["berm_width_profile"]) > 0:
+                    save_geodataframe(canal_params["berm_width_profile"], vectors_dir / f"{prefix}_berm_width_profile.geojson")
 
                 summary_rows.append({
                     "mask": str(merged_mask_path),
                     "mean_estimated_water_surface_width_m": canal_params.get("mean_estimated_water_surface_width_m", 0.0),
                     "sample_count": len(canal_params.get("width_profile", [])),
+                    "mean_estimated_berm_width_m": canal_params.get("mean_estimated_berm_width_m", 0.0),
                 })
                 report_df = generate_summary_report(canal_params=canal_params)
                 save_report(report_df, reports_dir, name=f"{prefix}_summary")

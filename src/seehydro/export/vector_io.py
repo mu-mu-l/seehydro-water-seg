@@ -3,7 +3,44 @@
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 from loguru import logger
+
+
+def _sanitize_shapefile_columns(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """将字段名调整为 Shapefile 兼容格式.
+
+    ESRI Shapefile 对字段名有 10 个字符限制。这里做确定性截断并处理重名，
+    避免导出时由底层驱动隐式改名，导致字段不可预期。
+    """
+    rename_map: dict[str, str] = {}
+    used: set[str] = set()
+
+    for column in gdf.columns:
+        if column == gdf.geometry.name:
+            continue
+
+        safe = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in str(column))
+        safe = safe[:10] or "field"
+        candidate = safe
+        suffix = 1
+        while candidate in used:
+            tail = str(suffix)
+            candidate = f"{safe[:10 - len(tail)]}{tail}"
+            suffix += 1
+        used.add(candidate)
+        rename_map[column] = candidate
+
+    sanitized = gdf.rename(columns=rename_map).copy()
+
+    for column in sanitized.columns:
+        if column == sanitized.geometry.name:
+            continue
+        series = sanitized[column]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            sanitized[column] = series.astype(str)
+
+    return sanitized
 
 
 def save_geodataframe(
@@ -25,7 +62,8 @@ def save_geodataframe(
         ext_map = {".geojson": "GeoJSON", ".shp": "ESRI Shapefile", ".gpkg": "GPKG"}
         driver = ext_map.get(output_path.suffix.lower(), "GeoJSON")
 
-    gdf.to_file(output_path, driver=driver)
+    output_gdf = _sanitize_shapefile_columns(gdf) if driver == "ESRI Shapefile" else gdf
+    output_gdf.to_file(output_path, driver=driver, index=False)
     logger.info(f"保存矢量数据: {output_path} ({len(gdf)} 条记录)")
     return output_path
 

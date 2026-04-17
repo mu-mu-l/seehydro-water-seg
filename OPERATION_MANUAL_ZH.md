@@ -365,11 +365,21 @@ python -m seehydro.cli extract \
 
 你应该看到这些结果：
 
+- `outputs/extraction/vectors/*_water_mask.geojson`
 - `outputs/extraction/vectors/*_centerline.geojson`
 - `outputs/extraction/vectors/*_width_profile.geojson`
+- `outputs/extraction/vectors/*_berm_mask.geojson`（如果有马道类别）
+- `outputs/extraction/vectors/*_berm_width_profile.geojson`（如果能提取到马道宽度）
 - `outputs/extraction/reports/*_summary.csv`
 - `outputs/extraction/reports/*_summary.xlsx`
 - `outputs/extraction/summary.json`
+
+你要重点看：
+
+- 掩膜面和中心线是不是明显错位
+- 宽度采样点是不是大体落在水面中轴附近
+- 如果某张图没有提出来中心线，至少 `water_mask` 面结果还在
+- 报表里的宽度是“估算值”，不是正式设计值
 
 
 ## 13. 第十步：导出结果
@@ -382,9 +392,15 @@ python -m seehydro.cli extract \
 
 ```bash
 python -m seehydro.cli export \
-  --input outputs/extraction/vectors \
+  --input outputs/extraction \
   --format shapefile \
   --report outputs/export_reports
+```
+
+也可以直接传：
+
+```bash
+--input outputs/extraction/vectors
 ```
 
 ### 13.3 怎么判断做对了
@@ -392,6 +408,9 @@ python -m seehydro.cli export \
 - 导出了目标格式文件
 - 如果传了 `--report`
   还会生成汇总报表
+- `shapefile` 字段名不会因为过长而被导坏
+- `report` 现在统一是同一套列结构：
+  `类别 / 子类 / 数量 / 指标项 / 指标值 / 单位 / 备注`
 
 
 ## 14. 一条最常用的完整业务链
@@ -432,6 +451,8 @@ python -m seehydro.cli pipeline quickstart \
 
 - 标注本身还是你手做
 - 代码不能替你画标签
+- 这条流水线现在会尽量输出和单独执行 `extract` 一致的结果：
+  `water_mask / centerline / width_profile / berm_mask / berm_width_profile / summary.json`
 
 
 ## 16. 最容易踩的坑
@@ -449,6 +470,7 @@ python -m seehydro.cli pipeline quickstart \
 - 把原始影像目录直接拿去 `extract`
 - 目录里混了很多不该处理的 tif
 - 模型权重和配置不匹配
+- 看到宽度结果就直接当正式设计参数
 
 
 ## 17. 你现在最应该怎么干

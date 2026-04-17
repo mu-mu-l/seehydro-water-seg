@@ -1,7 +1,5 @@
 """GIS量测工具."""
 
-from pathlib import Path
-
 import geopandas as gpd
 import numpy as np
 from pyproj import Geod, Transformer
@@ -53,6 +51,16 @@ def get_utm_crs(lon: float, lat: float) -> str:
     zone = int((lon + 180) / 6) + 1
     epsg = 32600 + zone if lat >= 0 else 32700 + zone
     return f"EPSG:{epsg}"
+
+
+def point_to_wgs84(x: float, y: float, crs: str | None) -> tuple[float, float]:
+    """将任意 CRS 下的点坐标转换为 WGS84 经纬度."""
+    if crs is None or crs.upper() == "EPSG:4326":
+        return x, y
+
+    transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    lon, lat = transformer.transform(x, y)
+    return float(lon), float(lat)
 
 
 def compute_perpendicular(

@@ -7,6 +7,9 @@ import pandas as pd
 from loguru import logger
 
 
+REPORT_COLUMNS = ["类别", "子类", "数量", "指标项", "指标值", "单位", "备注"]
+
+
 def generate_summary_report(
     canal_params: dict | None = None,
     bridges: gpd.GeoDataFrame | None = None,
@@ -27,7 +30,9 @@ def generate_summary_report(
             "类别": "渠道",
             "子类": "水面",
             "数量": 1,
-            "平均估算水面宽度(m)": canal_params.get("mean_estimated_water_surface_width_m", "-"),
+            "指标项": "平均估算宽度",
+            "指标值": canal_params.get("mean_estimated_water_surface_width_m", "-"),
+            "单位": "m",
             "备注": f"采样点数: {len(canal_params.get('width_profile', []))}",
         })
         if "mean_estimated_berm_width_m" in canal_params:
@@ -35,7 +40,9 @@ def generate_summary_report(
                 "类别": "渠道",
                 "子类": "马道",
                 "数量": 1,
-                "平均估算马道宽度(m)": canal_params["mean_estimated_berm_width_m"],
+                "指标项": "平均估算宽度",
+                "指标值": canal_params["mean_estimated_berm_width_m"],
+                "单位": "m",
                 "备注": "",
             })
 
@@ -47,7 +54,9 @@ def generate_summary_report(
                 "类别": "桥梁",
                 "子类": subset["bridge_type_cn"].iloc[0] if "bridge_type_cn" in subset.columns else btype,
                 "数量": len(subset),
-                "平均宽度(m)": round(subset["span_m"].mean(), 1),
+                "指标项": "平均跨度",
+                "指标值": round(subset["span_m"].mean(), 1),
+                "单位": "m",
                 "备注": f"跨度范围: {subset['span_m'].min():.1f}-{subset['span_m'].max():.1f}m",
             })
 
@@ -59,8 +68,10 @@ def generate_summary_report(
                 "类别": "倒虹吸",
                 "子类": "已匹配",
                 "数量": len(matched),
-                "平均宽度(m)": round(matched["length_m"].mean(), 1),
-                "备注": "平均宽度列实为平均长度",
+                "指标项": "平均长度",
+                "指标值": round(matched["length_m"].mean(), 1),
+                "单位": "m",
+                "备注": "",
             })
 
     # 渡槽
@@ -69,8 +80,10 @@ def generate_summary_report(
             "类别": "渡槽",
             "子类": "-",
             "数量": len(aqueducts),
-            "平均宽度(m)": round(aqueducts["length_m"].mean(), 1),
-            "备注": "平均宽度列实为平均长度",
+            "指标项": "平均长度",
+            "指标值": round(aqueducts["length_m"].mean(), 1),
+            "单位": "m",
+            "备注": "",
         })
 
     # 闸门
@@ -81,11 +94,13 @@ def generate_summary_report(
                 "类别": "闸门",
                 "子类": subset["type_cn"].iloc[0] if "type_cn" in subset.columns else gtype,
                 "数量": len(subset),
-                "平均宽度(m)": "-",
+                "指标项": "-",
+                "指标值": "-",
+                "单位": "-",
                 "备注": "",
             })
 
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=REPORT_COLUMNS)
 
 
 def save_report(
