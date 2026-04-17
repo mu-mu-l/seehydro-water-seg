@@ -155,13 +155,29 @@ python3 -m seehydro.cli extract \
   --sample-interval 50
 ```
 
+这一步现在会尽量输出：
+
+- `*_water_mask.geojson`
+- `*_centerline.geojson`
+- `*_width_profile.geojson`
+- `*_berm_mask.geojson`（如果有马道类别）
+- `*_berm_width_profile.geojson`（如果能提取到马道宽度）
+- `reports/*_summary.csv`
+- `reports/*_summary.xlsx`
+- `summary.json`
+
+补充说明：
+
+- 如果某张图暂时提不出中心线，程序仍会尽量保留 `water_mask` 面结果。
+- 宽度结果属于估算值，只能用于辅助分析，不能直接当正式测绘或设计参数。
+
 ### 2.8 导出 GeoJSON / SHP
 
 导出 GeoJSON:
 
 ```bash
 python3 -m seehydro.cli export \
-  --input outputs/extraction/vectors \
+  --input outputs/extraction \
   --format geojson \
   --report outputs/export_reports
 ```
@@ -170,10 +186,18 @@ python3 -m seehydro.cli export \
 
 ```bash
 python3 -m seehydro.cli export \
-  --input outputs/extraction/vectors \
+  --input outputs/extraction \
   --format shapefile \
   --report outputs/export_reports
 ```
+
+也可以直接传 `outputs/extraction/vectors`。
+
+补充说明：
+
+- 导出 `shapefile` 时，程序会自动处理字段名长度限制。
+- 报表现在统一使用：
+  `类别 / 子类 / 数量 / 指标项 / 指标值 / 单位 / 备注`
 
 ### 2.9 一条命令跑通快速流程
 
@@ -327,13 +351,30 @@ python -m seehydro.cli extract `
   --sample-interval 50
 ```
 
+提取输出现在会尽量包括：
+
+- `*_water_mask.geojson`
+- `*_centerline.geojson`
+- `*_width_profile.geojson`
+- `*_berm_mask.geojson`
+- `*_berm_width_profile.geojson`
+- `reports\*_summary.csv`
+- `reports\*_summary.xlsx`
+- `summary.json`
+
 ### 3.8 导出 SHP
 
 ```powershell
 python -m seehydro.cli export `
-  --input outputs\extraction\vectors `
+  --input outputs\extraction `
   --format shapefile `
   --report outputs\export_reports
+```
+
+也可以直接传：
+
+```powershell
+--input outputs\extraction\vectors
 ```
 
 ### 3.9 快速流程
@@ -375,8 +416,10 @@ python -m seehydro.cli pipeline quickstart `
 
 参数提取输出:
 
+- `outputs/extraction/vectors/*_water_mask.geojson`: 自动提取的水面掩膜面
 - `outputs/extraction/vectors/*_centerline.geojson`: 自动提取的中心线
 - `outputs/extraction/vectors/*_width_profile.geojson`: 水面宽度采样结果
+- `outputs/extraction/vectors/*_berm_mask.geojson`: 马道掩膜面结果
 - `outputs/extraction/vectors/*_berm_width_profile.geojson`: 马道宽度采样结果
 - `outputs/extraction/reports/*.csv`: 汇总表
 - `outputs/extraction/reports/*.xlsx`: Excel 汇总表
@@ -384,8 +427,9 @@ python -m seehydro.cli pipeline quickstart `
 
 导出结果:
 
-- `outputs/extraction/vectors/export_geojson/`: 导出的 GeoJSON
 - `outputs/extraction/vectors/export_shapefile/`: 导出的 SHP
+- `outputs/extraction/vectors/export_geojson/`: 导出的 GeoJSON
+- `outputs/export_reports/`: 单独导出的汇总报表
 
 ## 5. 推荐执行顺序
 
@@ -417,3 +461,5 @@ python -m seehydro.cli pipeline quickstart `
 - 如果显存不够，把 `--batch-size` 从 `4` 降到 `2` 或 `1`
 - 如果没有路线文件，不需要强制手动画中心线；可以直接对大图切片再推理
 - 后处理和导出主要是 CPU 过程，不依赖 GPU
+- `pipeline quickstart` 现在会尽量输出和单独执行 `extract` 一致的结果
+- 报表列结构已统一，便于后续再次处理

@@ -24,6 +24,12 @@ TILE_PROVIDERS: dict[str, dict] = {
         ),
         "subdomains": ["0", "1", "2", "3", "4", "5", "6", "7"],
         "requires_key": True,
+        "request_interval": 1.2,
+        "headers": {
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Referer": "https://www.tianditu.gov.cn/",
+            "Origin": "https://www.tianditu.gov.cn",
+        },
     },
     "google_satellite": {
         "url": "https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
@@ -65,7 +71,13 @@ class TileDownloader:
         self.provider: str = provider
         self.api_key: str | None = api_key
         self._config: dict = TILE_PROVIDERS[provider]
-        self.request_interval = max(0.0, request_interval)
+        provider_request_interval = self._config.get("request_interval")
+        if request_interval != 0.35:
+            provider_request_interval = request_interval
+        if provider_request_interval is None:
+            provider_request_interval = request_interval
+        provider_request_interval = float(provider_request_interval)
+        self.request_interval = max(0.0, provider_request_interval)
         self.max_backoff_seconds = max(1.0, max_backoff_seconds)
         self._last_request_ts = 0.0
 
@@ -73,7 +85,15 @@ class TileDownloader:
             raise ValueError(f"服务商 '{provider}' 需要 API Key，请通过 api_key 参数传入。")
 
         self._session = requests.Session()
-        self._session.headers.update({"User-Agent": "SeeHydro/0.1 (Research)"})
+        self._session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Connection": "keep-alive",
+        })
+        self._session.headers.update(self._config.get("headers", {}))
 
     def download_tiles(
         self,
@@ -114,6 +134,16 @@ class TileDownloader:
         coords: list[tuple[int, int]] = [
             (x, y) for y in range(y_min, y_max + 1) for x in range(x_min, x_max + 1)
         ]
+        logger.info(
+            "瓦片范围已解析: provider={}, zoom={}, x=[{}, {}], y=[{}, {}], 总计={}",
+            self.provider,
+            zoom,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+            len(coords),
+        )
         success_count = 0
         failed_count = 0
 
@@ -126,6 +156,16 @@ class TileDownloader:
                 success_count += 1
             else:
                 failed_count += 1
+
+        if success_count == 0:
+            raise RuntimeError(
+                "瓦片下载全部失败，未生成 GeoTIFF。请检查天地图 key、配额、网络环境，或进一步缩小 bbox。"
+            )
+        if failed_count > 0:
+            raise RuntimeError(
+                f"瓦片下载部分失败：总计 {len(coords)}，成功 {success_count}，失败 {failed_count}。"
+                " 为避免生成含黑块的 GeoTIFF，本次已中止输出。请检查网络、配额或缩小 bbox 后重试。"
+            )
 
         left, top = tile_to_lon_lat(x_min, y_min, zoom)
         right, bottom = tile_to_lon_lat(x_max + 1, y_max + 1, zoom)
@@ -160,7 +200,7 @@ class TileDownloader:
         )
         return tif_path
 
-    def _download_single_tile(self, z: int, x: int, y: int, max_retries: int = 3) -> np.ndarray | None:
+    def _download_single_tile(self, z: int, x: int, y: int, max_retries: int = 5) -> np.ndarray | None:
         """下载单个瓦片，返回256x256x3的numpy数组，失败返回None."""
         url = self._build_url(z, x, y)
 
